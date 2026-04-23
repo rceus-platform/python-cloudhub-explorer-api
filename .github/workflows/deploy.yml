@@ -1,0 +1,49 @@
+name: Deploy App
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy latest code
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          envs: GITHUB_REPOSITORY,SITE_PASSCODE,GOOGLE_CLIENT_ID,GOOGLE_CLIENT_SECRET
+          script: |
+            set -e
+
+            APP_NAME="$(basename $GITHUB_REPOSITORY)"
+            APP_DIR="/opt/apps/$APP_NAME"
+            SERVICE_NAME=$APP_NAME.service
+            QCLUSTER_SERVICE_NAME=$APP_NAME-qcluster.service
+            MANIFEST=$APP_DIR/codebuild/app.manifest.json
+
+            echo "➡ Deploying $APP_NAME"
+
+            cd $APP_DIR
+
+            echo "🧹 Cleaning untracked files"
+            git clean -fd
+            git stash
+
+            echo "📥 Pulling code"
+            git pull origin main
+
+            echo "➡ Handover to standardized create_app.sh"
+            export APP_NAME
+            # create_app.sh handles .env, runtime setup, systemd, and nginx
+            sudo -E bash codebuild/create_app.sh
+
+            echo "✅ Deploy completed successfully"
+        env:
+          SITE_PASSCODE: ${{ secrets.SITE_PASSCODE }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
