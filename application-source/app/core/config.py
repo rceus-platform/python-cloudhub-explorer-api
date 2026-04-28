@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite:///./cloudhub.db"
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
+    GOOGLE_REDIRECT_URI: str = "http://localhost:8000/accounts/google/callback"
 
     # Security keys (will fallback to SITE_PASSCODE if not set)
     SECRET_KEY: str = ""

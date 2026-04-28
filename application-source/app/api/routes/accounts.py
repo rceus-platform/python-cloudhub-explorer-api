@@ -167,7 +167,7 @@ def google_login() -> AuthUrlResponse:
         ],
     )
 
-    flow.redirect_uri = "http://localhost:8000/accounts/google/callback"
+    flow.redirect_uri = settings.GOOGLE_REDIRECT_URI
 
     auth_url, _ = flow.authorization_url(  # type: ignore[no-untyped-call]
         access_type="offline",
@@ -201,7 +201,7 @@ async def google_callback(
         ],
     )
 
-    flow.redirect_uri = "http://localhost:8000/accounts/google/callback"
+    flow.redirect_uri = settings.GOOGLE_REDIRECT_URI
 
     # Relax token scope validation for Google OAuth
     os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
