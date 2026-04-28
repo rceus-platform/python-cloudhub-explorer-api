@@ -1,1 +1,5 @@
-"""Core package initialization."""
+"""Core Package Initialization.
+
+Responsibilities:
+- Mark the directory as a Python package
+"""

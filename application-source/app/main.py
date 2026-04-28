@@ -1,27 +1,40 @@
-"""Main Application: initializes FastAPI, configures CORS, and manages app lifespan."""
+"""CloudHub Explorer API Entry Point.
 
+Responsibilities:
+- Initialize the FastAPI application and mount middleware
+- Register API routers for auth, accounts, files, and video
+- Manage database initialization and server lifecycle events
 
-import logging
-import os
+Boundaries:
+- Does not handle business logic or data validation (delegated to routes/services)
+- Does not handle raw database queries (delegated to models/session)
+"""
+
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import accounts, auth, files
+from app.api.routes import accounts, auth, files, video
+from app.core.config import settings
 from app.core.dependencies import get_current_user, get_current_user_dev
 from app.db.models import Base
 from app.db.session import engine
 
-logger = logging.getLogger(__name__)
+# Initialize database schema
+Base.metadata.create_all(bind=engine)
+
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI):
-    """Lifespan context manager for startup and shutdown events."""
-    logger.info("Initializing database...")
-    Base.metadata.create_all(bind=engine)
+async def lifespan(_: FastAPI):
+    """Manage application startup and shutdown events."""
+
+    # Startup
+    print("Server started successfully")
     yield
-    logger.info("Shutting down...")
+    # Shutdown
+    print("Server shutting down")
+
 
 app = FastAPI(
     title="CloudHub Explorer API",
@@ -30,33 +43,31 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS Configuration
-origins = [
-    "http://localhost:3000",
-    "http://localhost:8000",
-]
-
+# Configure CORS with environment-aware origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Mount Routers
 app.include_router(auth.router, prefix="/auth", tags=["Auth"])
 app.include_router(accounts.router, prefix="/accounts", tags=["Accounts"])
 app.include_router(files.router, prefix="/files", tags=["Files"])
+app.include_router(video.router, prefix="/video", tags=["Video"])
 
-# Development Overrides
-if os.environ.get("DEV_MODE") == "true":
-    logger.warning("DEV_MODE is enabled. Authentication is bypassed.")
+# Development-only auth bypass
+if settings.DEBUG:
+    from app.core.dependencies import get_current_user_optional
+
     app.dependency_overrides[get_current_user] = get_current_user_dev
-
+    app.dependency_overrides[get_current_user_optional] = get_current_user_dev
 
 
 @app.get("/")
 def root():
-    """Health check endpoint"""
+    """Health check endpoint."""
 
     return {"message": "CloudHub Explorer API is running"}

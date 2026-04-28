@@ -1,1 +1,5 @@
-"""Initialization file for the app package."""
+"""App Package Initialization.
+
+Responsibilities:
+- Mark the directory as a Python package
+"""

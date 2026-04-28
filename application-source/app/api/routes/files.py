@@ -1,131 +1,105 @@
-"""Files API Router: handles multi-provider file listing, metadata merging, and secure streaming."""
+"""Files API Module.
 
+Responsibilities:
+- Provide endpoints for file browsing and navigation
+- Handle media streaming and thumbnail retrieval
+- Manage custom thumbnail uploads and captures
 
+Boundaries:
+- Logic for account resolution delegated to account_service
+- Logic for library merging delegated to library_service
+- Logic for media processing delegated to thumbnail_service
+"""
+
+import io
 import json
-import logging
-from urllib.parse import quote
+import os
 
 import requests
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
+from PIL import Image
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.dependencies import get_current_user, get_current_user_optional
 from app.db import models
+from app.db.schemas import FileListResponse, ThumbnailUpdateResponse
 from app.db.session import get_db
-from app.services.gdrive_service import (
-    get_valid_access_token,
-)
-from app.services.gdrive_service import list_files as gdrive_list
-from app.services.mega_service import (
-    get_mega_session,
-    invalidate_session,
-)
-from app.services.mega_service import list_files as mega_list
-from app.utils.folder_merger import merge_files
-
-logger = logging.getLogger(__name__)
+from app.services import account_service, file_cache, library_service, thumbnail_service
+from app.services.gdrive_service import get_valid_access_token
+from app.utils.file_utils import get_media_type
 
 router = APIRouter()
 
 
-@router.get("/")
-def list_files(
+def _resolve_account(
+    db: Session, user_id: int, provider: str, file_id: str
+) -> tuple[models.Account | None, str]:
+    """Extract account email from file_id and resolve the account credentials."""
+
+    if ":" in file_id:
+        email, raw_id = file_id.split(":", 1)
+        account = account_service.get_account_by_email(db, user_id, provider, email)
+        return account, raw_id
+
+    # Backward compatibility for non-prefixed IDs (fallback to last account)
+    return account_service.get_provider_account(db, user_id, provider), file_id
+
+
+@router.get("/", response_model=FileListResponse)
+async def list_files(
     folder_id: str = Query("root"),
+    refresh: bool = Query(False),
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
-):
-    """List files and folders for the current user from all connected providers"""
+    user: models.User = Depends(get_current_user),
+) -> FileListResponse:
+    """Retrieve a merged list of files from all linked cloud accounts."""
 
-    accounts = db.query(models.Account).filter(models.Account.user_id == user.id).all()
+    user_id = int(user.id)  # type: ignore[arg-type]
 
-    all_file_lists = []
+    # 1. Check in-memory TTL cache
+    if not refresh:
+        cached = file_cache.get(user_id, folder_id)
+        if cached is not None:
+            return cached
 
-    if folder_id == "root" and settings.MEGA_USERNAME and settings.MEGA_PASSWORD:
+    # 2. Check database persistent cache
+    if not refresh:
+        db_cached = library_service.get_cached_folder(db, user_id, folder_id)
+        if db_cached:
+            # Re-inject dynamic metadata (watch progress) into cached structure
+            enriched_files = library_service.inject_metadata(db, user_id, db_cached)
+            result = FileListResponse(folder_id=folder_id, files=enriched_files)
+            file_cache.set_data(user_id, folder_id, result.model_dump())
+            return result
+
+    accounts = account_service.get_user_accounts(db, user_id)
+
+    # Resolve folder mapping for merged directories
+    target_folder_id = folder_id
+    if folder_id != "root":
         try:
-            m = get_mega_session(settings.MEGA_USERNAME, settings.MEGA_PASSWORD)
-            if m:
-                files = mega_list(
-                    m,
-                    folder_id,
-                    account_id=0,
-                    account_email=settings.MEGA_USERNAME,
-                )
-                if files:
-                    all_file_lists.append(files)
-        except Exception:
-            logger.exception("Error with env-configured Mega login")
-            invalidate_session(settings.MEGA_USERNAME)
+            folder_map = json.loads(folder_id)
+            # Filter accounts to only those present in the folder map
+            accounts = [acc for acc in accounts if acc.provider in folder_map]
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise HTTPException(
+                status_code=400, detail="Invalid folder_id format"
+            ) from exc
 
-    if folder_id == "root":
-        for acc in accounts:
-            try:
-                if acc.provider == "gdrive":
-                    files = gdrive_list(acc, db, folder_id)
+    # 3. Fetch from cloud accounts (Final fallback or if refresh=True)
+    merged_files = await library_service.list_all_files(db, accounts, target_folder_id)
 
-                elif acc.provider == "mega":
-                    m = get_mega_session(acc.access_token, acc.refresh_token)
-                    if not m:
-                        continue
-                    files = mega_list(
-                        m, folder_id, account_id=acc.id, account_email=acc.email
-                    )
+    # Save to database cache before enriching with user-specific session data
+    library_service.save_folder_cache(db, user_id, folder_id, merged_files)
 
-                else:
-                    continue
+    # Inject metadata (thumbnails, duration, watch history)
+    enriched_files = library_service.inject_metadata(db, user_id, merged_files)
 
-                if files:
-                    all_file_lists.append(files)
-            except Exception:
-                logger.exception("Error listing files for provider %s", acc.provider)
-                if acc.provider == "mega":
-                    invalidate_session(acc.access_token)
-                continue
-
-        merged_files = merge_files(all_file_lists)
-        logger.info("Successfully merged %d files for user %s from multiple providers", len(merged_files), user.id)
-        return {"folder_id": folder_id, "files": merged_files}
-
-    try:
-        folder_map = json.loads(folder_id)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail="Invalid folder_id format") from exc
-
-    for acc in accounts:
-        provider = acc.provider
-
-        if provider not in folder_map:
-            continue
-
-        provider_folder_id = folder_map[provider]
-
-        try:
-            if provider == "gdrive":
-                files = gdrive_list(acc, db, provider_folder_id)
-
-            elif provider == "mega":
-                m = get_mega_session(acc.access_token, acc.refresh_token)
-                if not m:
-                    continue
-                files = mega_list(
-                    m, provider_folder_id, account_id=acc.id, account_email=acc.email
-                )
-
-            else:
-                continue
-
-            if files:
-                all_file_lists.append(files)
-        except Exception:
-            logger.exception("Error listing files for provider %s", provider)
-            if provider == "mega":
-                invalidate_session(acc.access_token)
-            continue
-
-    merged_files = merge_files(all_file_lists)
-
-    return {"folder_id": folder_id, "files": merged_files}
+    result = FileListResponse(folder_id=folder_id, files=enriched_files)
+    file_cache.set_data(user_id, folder_id, result.model_dump())
+    return result
 
 
 @router.get("/stream")
@@ -133,119 +107,194 @@ def stream_file(
     request: Request,
     provider: str,
     file_id: str,
-    _file_name: str,
-    account_id: int = Query(None),
     db: Session = Depends(get_db),
-    user=Depends(get_current_user_optional),
+    user: models.User | None = Depends(get_current_user_optional),
 ):
-    """Stream a file from the specified provider with range support"""
+    """Proxy video streams from cloud providers with range support."""
 
-    if provider not in ["gdrive", "mega"]:
-        raise HTTPException(status_code=400, detail=f"Unsupported provider: {provider}")
-
-    account = None
-
-    if user is not None:
-        query = db.query(models.Account).filter(
-            models.Account.user_id == user.id,
-            models.Account.provider == provider,
-        )
-
-        if account_id is not None:
-            query = query.filter(models.Account.id == account_id)
-
-        account = query.first()
-
-    if account is None and provider == "mega":
-        if settings.MEGA_USERNAME and settings.MEGA_PASSWORD:
-
-            class _EnvMegaAccount:
-                access_token = settings.MEGA_USERNAME
-                refresh_token = settings.MEGA_PASSWORD
-
-            account = _EnvMegaAccount()
+    user_id = int(user.id) if user else -1  # type: ignore[arg-type]
+    account, real_file_id = _resolve_account(db, user_id, provider, file_id)
 
     if not account:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No linked {provider} account found and no environment credentials configured",
-        )
+        raise HTTPException(status_code=404, detail="Credentials not found")
 
-    headers = {}
+    # Detect if it's an image to avoid range-based partial content issues
+    file_name = request.query_params.get("file_name", "")
+    is_image = get_media_type(file_name).startswith("image/")
+
+    headers: dict[str, str] = {}
     range_header = request.headers.get("Range")
-    if range_header:
+    if range_header and not is_image:
         headers["Range"] = range_header
 
-    url = ""
     if provider == "gdrive":
-        access_token = get_valid_access_token(account, db)
-
-        url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
-
-        headers["Authorization"] = f"Bearer {access_token}"
-
+        token = get_valid_access_token(account, db)
+        url = f"https://www.googleapis.com/drive/v3/files/{real_file_id}?alt=media"
+        headers["Authorization"] = f"Bearer {token}"
     elif provider == "mega":
-        stream_url = (
-            f"{settings.STREAM_SERVICE_URL}/stream?"
-            f"email={quote(account.access_token)}&"
-            f"fileId={quote(file_id)}"
+        url = f"http://localhost:4000/stream?fileId={real_file_id}"
+        headers["X-Mega-Email"] = str(account.access_token)
+        headers["X-Mega-Password"] = str(account.refresh_token)
+        if settings.INTERNAL_SECRET:
+            headers["X-Internal-Secret"] = settings.INTERNAL_SECRET
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported provider")
+
+    response = requests.get(url, headers=headers, stream=True, timeout=30)
+    print(f"DEBUG: Upstream {provider} response: {response.status_code}")
+    print(f"DEBUG: Upstream headers: {dict(response.headers)}")
+
+    if response.status_code >= 400:
+        raise HTTPException(
+            status_code=response.status_code, detail="Stream source error"
         )
 
-        headers = {}
-        range_header = request.headers.get("Range")
-        if range_header:
-            headers["Range"] = range_header
-
+    def generate():
         try:
-            response = requests.get(
-                stream_url, headers=headers, stream=True, timeout=60
-            )
-            response.raise_for_status()
-        except requests.exceptions.RequestException as exc:
-            logger.exception("Error connecting to Mega stream service for file %s", file_id)
-            raise HTTPException(
-                status_code=502, detail="Error communicating with streaming service"
-            ) from exc
-
-        def generate_mega():
             for chunk in response.iter_content(chunk_size=1024 * 1024):
                 if chunk:
                     yield chunk
-
-        return StreamingResponse(
-            generate_mega(),
-            status_code=response.status_code,
-            headers={
-                "Content-Type": response.headers.get("Content-Type", "video/mp4"),
-                "Content-Length": response.headers.get("Content-Length", ""),
-                "Accept-Ranges": "bytes",
-                "Content-Range": response.headers.get("Content-Range", ""),
-                "Content-Disposition": "inline",
-            },
-        )
-
-    try:
-        response = requests.get(url, headers=headers, stream=True, timeout=60)
-        response.raise_for_status()
-    except requests.exceptions.RequestException as exc:
-        logger.exception("Error streaming from provider %s for file %s", provider, file_id)
-        raise HTTPException(
-            status_code=502, detail=f"Error streaming from {provider}"
-        ) from exc
-
-    def generate_drive():
-        for chunk in response.iter_content(chunk_size=1024 * 1024):
-            if chunk:
-                yield chunk
+        finally:
+            response.close()
 
     return StreamingResponse(
-        generate_drive(),
+        generate(),
         status_code=response.status_code,
         headers={
-            "Content-Type": response.headers.get("Content-Type", "video/mp4"),
+            "Content-Type": response.headers.get(
+                "Content-Type", get_media_type(file_name)
+            ),
             "Content-Length": response.headers.get("Content-Length", ""),
             "Accept-Ranges": "bytes",
             "Content-Range": response.headers.get("Content-Range", ""),
             "Content-Disposition": "inline",
         },
     )
+
+
+@router.get("/thumbnail")
+def get_thumbnail(
+    provider: str,
+    file_id: str,
+    file_name: str | None = None,
+    timestamp: int | None = None,
+    db: Session = Depends(get_db),
+    user: models.User | None = Depends(get_current_user_optional),
+):
+    """Retrieve or extract a thumbnail for a given file."""
+
+    cache_path = thumbnail_service.get_cache_path(file_id, timestamp)
+
+    # Check cache/db first for standard thumbnails
+    if timestamp is None:
+        metadata = (
+            db.query(models.FileMetadata)
+            .filter(models.FileMetadata.file_id == file_id)
+            .first()
+        )
+        if metadata and metadata.thumbnail_path:  # type: ignore[return-value]
+            thumbnail_path_str = str(metadata.thumbnail_path)
+            if thumbnail_path_str and os.path.exists(cache_path):
+                return FileResponse(cache_path)
+
+    # Resolve account and stream URL
+    user_id = int(user.id) if user else -1  # type: ignore[arg-type]
+    account, real_file_id = _resolve_account(db, user_id, provider, file_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    token = get_valid_access_token(account, db) if provider == "gdrive" else None
+    stream_url = (
+        f"https://www.googleapis.com/drive/v3/files/{real_file_id}?alt=media"
+        if provider == "gdrive"
+        else f"http://localhost:4000/stream?fileId={real_file_id}"
+    )
+
+    try:
+        media_type = get_media_type(file_name or "")
+        is_image = media_type.startswith("image/")
+
+        # Security headers for internal stream proxy
+        headers = {}
+        if provider == "gdrive" and token:
+            headers["Authorization"] = f"Bearer {token}"
+        elif provider == "mega":
+            headers["X-Mega-Email"] = str(account.access_token)
+            headers["X-Mega-Password"] = str(account.refresh_token)
+            if settings.INTERNAL_SECRET:
+                headers["X-Internal-Secret"] = settings.INTERNAL_SECRET
+
+        if is_image:
+            thumbnail_service.process_image_thumbnail(stream_url, headers, cache_path)
+            duration, width, height = 0, None, None
+        else:
+            duration, width, height = thumbnail_service.extract_video_frame(
+                stream_url, headers, cache_path, timestamp
+            )
+
+        if timestamp is None:
+            thumbnail_service.save_metadata(
+                db, file_id, provider, file_name, duration, width, height
+            )
+
+        return FileResponse(cache_path)
+    except Exception as e:
+        print(f"Thumbnail extraction failed: {e}")
+        raise HTTPException(status_code=404, detail="Thumbnail not found") from e
+
+
+@router.patch("/{file_id}/thumbnail", response_model=ThumbnailUpdateResponse)
+async def update_thumbnail(
+    file_id: str,
+    provider: str = Query(...),
+    timestamp: int | None = Query(None),
+    file: UploadFile | None = File(None),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+) -> ThumbnailUpdateResponse:
+    """Update a file's thumbnail via manual upload or timestamp capture."""
+
+    cache_path = thumbnail_service.get_cache_path(file_id)
+
+    if file:
+        content = await file.read()
+        img = Image.open(io.BytesIO(content))
+        img.thumbnail((1280, 720))
+        img.save(cache_path, "JPEG", quality=85, optimize=True)
+    elif timestamp is not None:
+        user_id = int(user.id)  # type: ignore[arg-type]
+        account, real_file_id = _resolve_account(db, user_id, provider, file_id)
+        if not account:
+            raise HTTPException(status_code=401, detail="Account not found")
+
+        token = get_valid_access_token(account, db) if provider == "gdrive" else None
+        stream_url = (
+            f"https://www.googleapis.com/drive/v3/files/{real_file_id}?alt=media"
+            if provider == "gdrive"
+            else f"http://localhost:4000/stream?fileId={real_file_id}"
+        )
+
+        # Security headers for internal stream proxy
+        headers = {}
+        if provider == "gdrive" and token:
+            headers["Authorization"] = f"Bearer {token}"
+        elif provider == "mega":
+            headers["X-Mega-Email"] = str(account.access_token)
+            headers["X-Mega-Password"] = str(account.refresh_token)
+            if settings.INTERNAL_SECRET:
+                headers["X-Internal-Secret"] = settings.INTERNAL_SECRET
+
+        thumbnail_service.extract_video_frame(
+            stream_url, headers, cache_path, timestamp
+        )
+    else:
+        raise HTTPException(status_code=400, detail="Missing timestamp or file")
+
+    thumbnail_service.save_metadata(db, file_id, provider, None, None, None, None)
+    metadata = (
+        db.query(models.FileMetadata)
+        .filter(models.FileMetadata.file_id == file_id)
+        .first()
+    )
+    updated_at = int(metadata.updated_at) if metadata else 0  # type: ignore[arg-type]
+    return ThumbnailUpdateResponse(success=True, updated_at=updated_at)

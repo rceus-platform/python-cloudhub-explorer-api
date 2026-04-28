@@ -1,189 +1,308 @@
-"""Accounts API Router: manages Google Drive and Mega account connections and credential storage."""
+"""Accounts API Module.
 
-import logging
+Responsibilities:
+- Handle OAuth2 flow for Google Drive accounts
+- Manage account linking and credential persistence
+- Provide endpoints for listing and managing linked accounts
 
+Boundaries:
+- Does not handle file listing (delegated to routes.files)
+- Does not handle JWT verification (delegated to core.dependencies)
+"""
+
+import asyncio
+import os
 from fastapi import APIRouter, Depends, HTTPException
-from google_auth_oauthlib.flow import Flow
+from fastapi.responses import HTMLResponse
+from google_auth_oauthlib.flow import Flow  # type: ignore[import]
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.dependencies import get_current_user
-from app.db import models, schemas
+from app.db import models
+from app.db.schemas import (
+    AccountAddRequest,
+    AccountResponse,
+    AuthUrlResponse,
+    SuccessMessageResponse,
+    SuccessStatusResponse,
+)
 from app.db.session import get_db
-from app.services.mega_service import get_mega_session
-
-logger = logging.getLogger(__name__)
+from app.services import file_cache
+from app.services.gdrive_service import get_account_info as get_gdrive_info
+from app.services.mega_service import get_mega_session, get_storage_info as get_mega_info
 
 router = APIRouter()
 
 
-@router.get("/google/login")
-def google_login(_user=Depends(get_current_user)):
-    """Generate Google OAuth login URL"""
-
-    flow = Flow.from_client_config(
-        {
-            "web": {
-                "client_id": settings.GOOGLE_CLIENT_ID,
-                "client_secret": settings.GOOGLE_CLIENT_SECRET,
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": "https://oauth2.googleapis.com/token",
-            }
-        },
-        scopes=[
-            "https://www.googleapis.com/auth/drive.readonly",
-            "openid",
-            "https://www.googleapis.com/auth/userinfo.email",
-        ],
-    )
-
-    flow.redirect_uri = f"{settings.API_BASE_URL}/accounts/google/callback"
-
-    auth_url, _ = flow.authorization_url(
-        access_type="offline",
-        prompt="consent",
-    )
-
-    return {"auth_url": auth_url}
-
-
-@router.get("/google/callback")
-def google_callback(
-    code: str,
-    db: Session = Depends(get_db),
-    user=Depends(get_current_user),
+@router.get("/", response_model=list[AccountResponse])
+async def get_accounts(
+    db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
 ):
-    """Handle Google OAuth callback and store tokens"""
-
-    flow = Flow.from_client_config(
-        {
-            "web": {
-                "client_id": settings.GOOGLE_CLIENT_ID,
-                "client_secret": settings.GOOGLE_CLIENT_SECRET,
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": "https://oauth2.googleapis.com/token",
-            }
-        },
-        scopes=[
-            "https://www.googleapis.com/auth/drive.readonly",
-            "openid",
-            "https://www.googleapis.com/auth/userinfo.email",
-        ],
-    )
-
-    flow.redirect_uri = f"{settings.API_BASE_URL}/accounts/google/callback"
-
-    try:
-        flow.fetch_token(code=code)
-        credentials = flow.credentials
-
-        # Fetch user email from Google
-        session = flow.authorized_session()
-        response = session.get("https://www.googleapis.com/oauth2/v1/userinfo")
-        response.raise_for_status()
-        user_info = response.json()
-        email = user_info.get("email")
-
-        if not email:
-            raise ValueError("No email found in Google user info")
-
-    except Exception as exc:
-        logger.exception("Error during Google OAuth callback")
-        raise HTTPException(
-            status_code=502,
-            detail="Error communicating with Google services. Please try again.",
-        ) from exc
-
-    account = models.Account(
-        user_id=user.id,
-        provider="gdrive",
-        email=email,
-        access_token=credentials.token,
-        refresh_token=credentials.refresh_token,
-    )
-
-    db.add(account)
-    db.commit()
-
-    logger.info(
-        "Successfully connected Google Drive account for user %s (%s)", user.id, email
-    )
-    return {"message": f"Google Drive connected successfully for {email}"}
-
-
-@router.post("/add")
-def add_account(
-    data: schemas.AccountCreate,
-    db: Session = Depends(get_db),
-    user=Depends(get_current_user),
-):
-    """Manually add a cloud provider account using JSON body"""
-
-    account = models.Account(
-        user_id=user.id, provider=data.provider, access_token=data.access_token
-    )
-
-    db.add(account)
-    db.commit()
-    db.refresh(account)
-
-    logger.info("Manually added account %s for user %s", data.provider, user.id)
-    return {"message": "Account added successfully"}
-
-
-@router.get("/", response_model=list[schemas.AccountOut])
-def get_accounts(db: Session = Depends(get_db), user=Depends(get_current_user)):
-    """Retrieve all connected accounts for the current user (safe response)"""
+    """Retrieve all linked accounts with real-time health and storage status."""
 
     accounts = db.query(models.Account).filter(models.Account.user_id == user.id).all()
+
+    async def refresh_account_status(acc: models.Account):
+        try:
+            if acc.provider == "gdrive":
+                info = await asyncio.to_thread(get_gdrive_info, acc, db)
+                if info:
+                    acc.email = info["email"]
+                    acc.storage_used = info["storage_used"]
+                    acc.storage_total = info["storage_total"]
+                    acc.is_active = True
+                else:
+                    acc.is_active = False
+            elif acc.provider == "mega":
+                m = await asyncio.to_thread(get_mega_session, acc.access_token, acc.refresh_token)
+                if m:
+                    info = await asyncio.to_thread(get_mega_info, m)
+                    acc.storage_used = info["storage_used"]
+                    acc.storage_total = info["storage_total"]
+                    acc.is_active = True
+                else:
+                    acc.is_active = False
+            db.commit()
+        except Exception as e:
+            print(f"Error refreshing account status for {acc.email}: {e}")
+            acc.is_active = False
+            db.commit()
+
+    # Refresh status in parallel
+    await asyncio.gather(*(refresh_account_status(acc) for acc in accounts))
 
     return accounts
 
 
-class MegaLoginRequest(schemas.BaseModel):
-    """Mega login request schema"""
-
-    email: str
-    password: str
-    label: str | None = None
-
-
-@router.post("/mega/login")
-def mega_login(
-    data: MegaLoginRequest,
+@router.post("/add", response_model=SuccessMessageResponse)
+async def add_account(
+    request: AccountAddRequest,
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
+    user: models.User = Depends(get_current_user),
 ):
-    """Authenticate with Mega and store credentials (safely)"""
+    """Link a new MEGA account using credentials."""
 
-    try:
-        m = get_mega_session(data.email, data.password)
-    except Exception as exc:
-        logger.exception(
-            "Unexpected error contacting Mega service during login for user %s", user.id
-        )
-        raise HTTPException(
-            status_code=502,
-            detail="Error contacting Mega service, please try again later.",
-        ) from exc
+    if request.provider == "mega":
+        m = await asyncio.to_thread(get_mega_session, request.email, request.password)
+        if not m:
+            raise HTTPException(status_code=401, detail="Invalid MEGA credentials")
 
-    if not m:
-        raise HTTPException(
-            status_code=401,
-            detail="Could not authenticate with Mega. Check credentials or try again shortly.",
-        )
+        info = await asyncio.to_thread(get_mega_info, m)
 
-    account = models.Account(
-        user_id=user.id,
-        provider="mega",
-        email=data.email,
-        label=data.label,
-        # We use email as the session key and avoid storing plaintext passwords for MEGA
-        access_token=data.email,
-        refresh_token=None,
+        # Check if already exists
+        existing = db.query(models.Account).filter(
+            models.Account.user_id == user.id,
+            models.Account.email == request.email,
+            models.Account.provider == "mega"
+        ).first()
+
+        if existing:
+            existing.access_token = request.email
+            existing.refresh_token = request.password
+            existing.storage_used = info["storage_used"]
+            existing.storage_total = info["storage_total"]
+            existing.is_active = True
+        else:
+            account = models.Account(
+                user_id=user.id,
+                email=request.email,
+                provider="mega",
+                access_token=request.email,  # Storing email as access_token for MEGA
+                refresh_token=request.password, # Storing password as refresh_token for MEGA
+                storage_used=info["storage_used"],
+                storage_total=info["storage_total"],
+                is_active=True
+            )
+            db.add(account)
+
+        db.commit()
+        file_cache.invalidate_all(user.id)
+        return {"message": "MEGA account linked successfully"}
+
+    raise HTTPException(status_code=400, detail="Unsupported provider for this endpoint")
+
+
+@router.delete("/{account_id}", response_model=SuccessStatusResponse)
+def disconnect_account(
+    account_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Disconnect and remove a linked cloud account."""
+
+    account = db.query(models.Account).filter(
+        models.Account.id == account_id,
+        models.Account.user_id == user.id
+    ).first()
+
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    db.delete(account)
+    db.commit()
+    file_cache.invalidate_all(user.id)
+
+    return {"status": "success"}
+
+
+@router.get("/google/login", response_model=AuthUrlResponse)
+def google_login() -> AuthUrlResponse:
+    """Initiate the Google OAuth2 authorization flow."""
+
+    flow = Flow.from_client_config(  # type: ignore[no-untyped-call]
+        {
+            "web": {
+                "client_id": settings.GOOGLE_CLIENT_ID,
+                "client_secret": settings.GOOGLE_CLIENT_SECRET,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }
+        },
+        scopes=[
+            "https://www.googleapis.com/auth/drive.readonly",
+            "https://www.googleapis.com/auth/userinfo.email",
+            "openid",
+        ],
     )
 
-    db.add(account)
-    db.commit()
+    flow.redirect_uri = "http://localhost:8000/accounts/google/callback"
 
-    return {"message": f"Mega connected successfully for {data.email}"}
+    auth_url, _ = flow.authorization_url(  # type: ignore[no-untyped-call]
+        access_type="offline",
+        prompt="consent",
+    )
+
+    return AuthUrlResponse(auth_url=auth_url)  # type: ignore[return-value]
+
+
+@router.get("/google/callback")
+async def google_callback(
+    code: str,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Handle the Google OAuth2 callback and persist tokens."""
+
+    flow = Flow.from_client_config(  # type: ignore[no-untyped-call]
+        {
+            "web": {
+                "client_id": settings.GOOGLE_CLIENT_ID,
+                "client_secret": settings.GOOGLE_CLIENT_SECRET,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }
+        },
+        scopes=[
+            "https://www.googleapis.com/auth/drive.readonly",
+            "https://www.googleapis.com/auth/userinfo.email",
+            "openid",
+        ],
+    )
+
+    flow.redirect_uri = "http://localhost:8000/accounts/google/callback"
+
+    # Relax token scope validation for Google OAuth
+    os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
+
+    # Exchange code for tokens
+    flow.fetch_token(code=code)  # type: ignore[no-untyped-call]
+    credentials = flow.credentials
+
+    # Create temporary account object to fetch info
+    temp_acc = models.Account(
+        access_token=credentials.token,
+        refresh_token=credentials.refresh_token
+    )
+
+    info = await asyncio.to_thread(get_gdrive_info, temp_acc, db)
+    if not info:
+        raise HTTPException(status_code=500, detail="Failed to fetch Google account info")
+
+    # Match by provider and email to find existing linked account.
+    existing = db.query(models.Account).filter(
+        models.Account.email == info["email"],
+        models.Account.provider == "gdrive"
+    ).first()
+
+    if existing and existing.user_id != user.id:
+        raise HTTPException(
+            status_code=409,
+            detail="This Google account is already linked to another user"
+        )
+
+    if existing:
+        existing.access_token = credentials.token
+        if credentials.refresh_token:
+            existing.refresh_token = credentials.refresh_token
+        existing.storage_used = info["storage_used"]
+        existing.storage_total = info["storage_total"]
+        existing.is_active = True
+    else:
+        account = models.Account(
+            user_id=user.id,
+            email=info["email"],
+            provider="gdrive",
+            access_token=credentials.token,
+            refresh_token=credentials.refresh_token,
+            storage_used=info["storage_used"],
+            storage_total=info["storage_total"],
+            is_active=True
+        )
+        db.add(account)
+
+    try:
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        # Race-safe retry path if another request inserted the same account.
+        print(f"Race condition detected during account link for {info['email']}: {e}")
+        existing = db.query(models.Account).filter(
+            models.Account.email == info["email"],
+            models.Account.provider == "gdrive"
+        ).first()
+        
+        if not existing:
+            # If still not found, it might be a different integrity issue
+            print(f"Failed to find existing account after IntegrityError for {info['email']}")
+            raise HTTPException(
+                status_code=500,
+                detail="Database integrity error during account linking"
+            ) from e
+
+        if existing.user_id != user.id:
+            raise HTTPException(
+                status_code=409,
+                detail="This Google account is already linked to another user"
+            )
+
+        existing.access_token = credentials.token
+        if credentials.refresh_token:
+            existing.refresh_token = credentials.refresh_token
+        existing.storage_used = info["storage_used"]
+        existing.storage_total = info["storage_total"]
+        existing.is_active = True
+        try:
+            db.commit()
+        except Exception as commit_err:
+            db.rollback()
+            print(f"Final commit failed during account link retry: {commit_err}")
+            raise HTTPException(status_code=500, detail="Failed to persist account updates") from commit_err
+    
+    file_cache.invalidate_all(user.id)
+
+    return HTMLResponse(
+        content="""
+        <html>
+            <script>
+                if (window.opener) {
+                    window.opener.postMessage('google-login-success', '*');
+                    window.close();
+                } else {
+                    document.body.innerHTML = '<h1>Success</h1><p>Google account linked successfully. You can close this tab.</p>';
+                }
+            </script>
+        </html>
+        """
+    )

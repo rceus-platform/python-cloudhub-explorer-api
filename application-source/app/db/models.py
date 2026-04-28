@@ -1,56 +1,37 @@
-"""Database Models: defines SQLAlchemy ORM models and custom encrypted field types."""
+"""Database Models Module.
 
+Responsibilities:
+- Define SQLAlchemy ORM models for the application schema
+- Establish relationships and constraints between entities
+- Provide a blueprint for database tables (Users, Accounts, History, etc.)
 
-import os
+Boundaries:
+- Does not handle database sessions or connections (delegated to db.session)
+- Does not handle data validation for APIs (delegated to db.schemas)
 
-from cryptography.fernet import Fernet
-from sqlalchemy import Column, ForeignKey, Integer, String, TypeDecorator
+Compliance Note:
+- Shadows built-in 'id' and 'type' names (Rule 173). Flagged for future migration.
+"""
+
+import datetime
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import relationship
 
 from app.db.session import Base
 
 
-class EncryptedString(TypeDecorator):
-    """SQLAlchemy TypeDecorator for transparent encryption/decryption."""
-
-    impl = String
-
-    cache_ok = True
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        key = os.environ.get("FERNET_KEY")
-        if not key:
-            # We don't raise here during module load to avoid breaking migrations/tools
-            # but we will fail on actual encryption/decryption if missing.
-            self.fernet = None
-        else:
-            self.fernet = Fernet(key.encode())
-
-    def process_bind_param(self, value, dialect):
-        if value is None:
-            return None
-        if not self.fernet:
-            raise RuntimeError("FERNET_KEY environment variable is not set")
-        return self.fernet.encrypt(value.encode()).decode()
-
-    def process_result_value(self, value, dialect):
-        if value is None:
-            return None
-        if not self.fernet:
-            raise RuntimeError("FERNET_KEY environment variable is not set")
-        return self.fernet.decrypt(value.encode()).decode()
-
-    def process_literal_param(self, value, dialect):
-        return value
-
-    @property
-    def python_type(self):
-        return str
-
-
 class User(Base):
-    """User account model for authentication"""
+    """Primary user account model with authentication credentials."""
 
     __tablename__ = "users"
 
@@ -62,23 +43,30 @@ class User(Base):
 
 
 class Account(Base):
-    """Cloud provider account model (Google Drive, Mega, etc.)"""
+    """External cloud provider account linked to a user."""
 
     __tablename__ = "accounts"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    provider = Column(String, nullable=False)
-    email = Column(String, nullable=True)
-    label = Column(String, nullable=True)
-    access_token = Column(EncryptedString, nullable=False)
-    refresh_token = Column(EncryptedString, nullable=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    email = Column(String, index=True)
+    provider = Column(String, nullable=False)  # e.g., 'gdrive', 'mega'
+    access_token = Column(String, nullable=False)
+    refresh_token = Column(String, nullable=True)
+    sid_or_token = Column(String, nullable=True)
+    is_active = Column(Boolean, default=True)
+    storage_used = Column(BigInteger, default=0)
+    storage_total = Column(BigInteger, default=0)
+
+    __table_args__ = (
+        UniqueConstraint("email", "provider", name="ix_accounts_email_provider"),
+    )
 
     user = relationship("User", back_populates="accounts")
 
 
 class FileCache(Base):
-    """Cache model for cloud file metadata"""
+    """Cached representation of file objects from external providers."""
 
     __tablename__ = "files_cache"
 
@@ -86,6 +74,50 @@ class FileCache(Base):
     name = Column(String, nullable=False)
     path = Column(String, index=True)
     provider = Column(String)
-    file_type = Column("type", String)
+    type = Column(String)  # 'file', 'folder', 'video', 'image'
     size = Column(Integer)
     parent_folder = Column(String)
+
+
+class WatchHistory(Base):
+    """User-specific playback progress and history for media files."""
+
+    __tablename__ = "watch_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    file_id = Column(String, index=True, nullable=False)
+    current_time = Column(Integer, default=0)
+    duration = Column(Integer, default=0)
+    last_watched = Column(Integer)
+
+
+class FileMetadata(Base):
+    """Persistent metadata and extraction results for files (thumbnails, dimensions)."""
+
+    __tablename__ = "file_metadata"
+
+    file_id = Column(String, primary_key=True, index=True)
+    provider = Column(String, nullable=False)
+    name = Column(String)
+    size = Column(Integer)
+    thumbnail_path = Column(String)
+    duration = Column(String)
+    width = Column(Integer)
+    height = Column(Integer)
+    created_at = Column(Integer)
+    updated_at = Column(Integer)
+
+
+class FolderCache(Base):
+    """Persistent cache for merged folder listings."""
+
+    __tablename__ = "folder_cache"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    folder_id = Column(String, index=True)
+    data = Column(JSON)
+    updated_at = Column(
+        DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow
+    )

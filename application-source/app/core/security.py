@@ -1,23 +1,33 @@
-"""Security Module: manages JWT token generation, verification, and cryptographic signing."""
+"""Core Security Module.
 
+Responsibilities:
+- Generate and verify JWT tokens for user sessions
+- Handle token expiration and cryptographic signatures
+- Provide centralized security utilities
 
-import os
+Boundaries:
+- Does not handle password hashing (delegated to auth route)
+- Does not handle database user lookups (delegated to dependencies)
+"""
+
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from fastapi import HTTPException, status
 from jose import JWTError, jwt
 
-SECRET_KEY = os.environ.get("SECRET_KEY")
-if not SECRET_KEY:
-    # Fail fast if SECRET_KEY is missing in production/deployed environments
-    raise RuntimeError("SECRET_KEY environment variable is not set")
+from app.core.config import settings
 
+# Security configuration (loaded from environment)
+SECRET_KEY = (
+    settings.SITE_PASSCODE
+)  # Reusing site passcode as secret key or should use a dedicated ENV
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 1 week
 
 
-def create_access_token(data: dict) -> str:
-    """Generate a new JWT access token with expiration"""
+def create_access_token(data: dict[str, Any]) -> str:
+    """Generate a signed JWT token with an expiration timestamp."""
 
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -25,8 +35,8 @@ def create_access_token(data: dict) -> str:
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
-def verify_token(token: str):
-    """Verify and decode a JWT token; raises 401 on failure"""
+def verify_token(token: str) -> dict[str, Any]:
+    """Verify a JWT signature and return the decoded payload; raises 401 if invalid."""
 
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])

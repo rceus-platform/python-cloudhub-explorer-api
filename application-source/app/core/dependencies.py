@@ -1,44 +1,40 @@
-"""API Dependencies: resolves current user from tokens and handles authentication requirements."""
+"""Core Dependencies Module.
 
+Responsibilities:
+- Provide FastAPI dependencies for user authentication
+- Resolve current user from JWT tokens in headers or query parameters
+- Handle authenticated and optional-authentication scenarios
 
-import logging
-from typing import Any, Optional
+Boundaries:
+- Does not handle token generation (delegated to core.security)
+- Does not handle raw database queries (delegated to models/db)
+"""
 
+from typing import Any
 from fastapi import Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError
 from sqlalchemy.orm import Session
 
 from app.core.security import verify_token
 from app.db import models
 from app.db.session import get_db
 
-logger = logging.getLogger(__name__)
-
 security = HTTPBearer(auto_error=False)
 
+def get_current_user_dev() -> Any:
+    """Mock user dependency for local development and testing."""
 
-def get_current_user_dev():
-    """Return a dummy user for development environments"""
+    class DummyUser:
+        """Dummy user object for development purposes."""
 
-    class DummyUser:  # pylint: disable=too-few-public-methods
-        """Dummy user for development environments"""
-
-        user_id = 1
-
-        @property
-        def id(self):
-            """Compatibility accessor for shadowed 'id' attribute."""
-            return self.user_id
-
+        id = 1
     return DummyUser()
 
-
 def _resolve_raw_token(
-    credentials: Optional[HTTPAuthorizationCredentials],
-    token: Optional[str],
-) -> Optional[str]:
-    """Extract the raw JWT string from whichever source is present."""
+    credentials: HTTPAuthorizationCredentials | None,
+    token: str | None,
+) -> str | None:
+    """Extract the raw JWT string from either the Authorization header or query string."""
 
     if credentials is not None:
         return credentials.credentials
@@ -46,13 +42,12 @@ def _resolve_raw_token(
         return token
     return None
 
-
 def get_current_user(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
-    token: Optional[str] = Query(default=None, include_in_schema=False),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+    token: str | None = Query(default=None, include_in_schema=False),
     db: Session = Depends(get_db),
-):
-    """Resolve the current user; raises HTTP 401 if no valid token is supplied."""
+) -> models.User:
+    """Strict dependency requiring a valid JWT; raises 401 if missing or invalid."""
 
     raw_token = _resolve_raw_token(credentials, token)
 
@@ -63,27 +58,10 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    try:
-        payload = verify_token(raw_token)
-    except JWTError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-        ) from exc
-    except Exception as exc:
-        # pylint: disable=broad-exception-caught
-        logger.exception("Unexpected error during token verification")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials",
-        ) from exc
-
+    payload = verify_token(raw_token)
     user_id = payload.get("user_id")
     if not user_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token",
-        )
+        raise HTTPException(status_code=401, detail="Invalid token")
 
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
@@ -91,13 +69,12 @@ def get_current_user(
 
     return user
 
-
 def get_current_user_optional(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
-    token: Optional[str] = Query(default=None, include_in_schema=False),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+    token: str | None = Query(default=None, include_in_schema=False),
     db: Session = Depends(get_db),
-) -> Optional[Any]:
-    """Like get_current_user but returns None instead of raising 401."""
+) -> models.User | None:
+    """Optional dependency that returns None instead of raising 401 if unauthenticated."""
 
     raw_token = _resolve_raw_token(credentials, token)
     if raw_token is None:
@@ -109,5 +86,5 @@ def get_current_user_optional(
         if not user_id:
             return None
         return db.query(models.User).filter(models.User.id == user_id).first()
-    except Exception:  # pylint: disable=broad-exception-caught
+    except HTTPException:
         return None

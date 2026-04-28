@@ -1,43 +1,54 @@
-"""Folder merger: utility to consolidate file lists from multiple cloud providers."""
+"""Folder Merger Utility.
+
+Responsibilities:
+- Consolidate file lists from multiple providers into a unified structure
+- Resolve duplicate entries by merging provider-specific identifiers
+
+Boundaries:
+- Does not handle file fetching or sorting
+"""
+
+from typing import Any
 
 
-def merge_files(file_lists: list[list[dict]]) -> list[dict]:
-    """Merge file lists and aggregate sizes for duplicated names/types."""
+def merge_files(file_lists: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """Merge files and preserve provider-specific IDs."""
 
     merged = {}
 
     for files in file_lists:
         for f in files:
-            name = f.get("name", "unknown")
-            file_type = f.get("type", "file")
-            key = (name, file_type)
+            key = (f["name"], f["type"])
 
             if key not in merged:
                 merged[key] = {
-                    "name": name,
-                    "type": file_type,
+                    "name": f["name"],
+                    "type": f["type"],
                     "providers": [],
-                    "accounts": [],
-                    "ids": [],
-                    "size": 0,
+                    "ids": {},  # Required for frontend
                 }
 
-            provider = f.get("provider", "unknown")
-            account_id = f.get("account_id")
-            account_email = f.get("account_email")
+            provider = f["provider"]
 
+            # Track providers
             if provider not in merged[key]["providers"]:
-                merged[key]["providers"].append(provider)
+                merged[key]["providers"].append(provider)  # type: ignore[union-attr]
 
-            merged[key]["ids"].append(
-                {"account_id": account_id, "provider": provider, "id": f.get("id")}
-            )
+            # Store provider-specific ID (support multiple accounts per provider)
+            if provider not in merged[key]["ids"]:
+                merged[key]["ids"][provider] = f["id"]
+            else:
+                existing_id = merged[key]["ids"][provider]
+                if isinstance(existing_id, list):
+                    if f["id"] not in existing_id:
+                        existing_id.append(f["id"])
+                elif existing_id != f["id"]:
+                    merged[key]["ids"][provider] = [existing_id, f["id"]]
 
-            merged[key]["accounts"].append(
-                {"id": account_id, "email": account_email, "provider": provider}
-            )
+            # Add size for files
+            if f["type"] == "file":
+                merged[key]["size"] = f.get("size", 0)
+                if f.get("thumbnail_url"):
+                    merged[key]["thumbnail_url"] = f["thumbnail_url"]
 
-            # Aggregate size if available
-            merged[key]["size"] += f.get("size", 0)
-
-    return list(merged.values())
+    return list(merged.values())  # type: ignore[return-value]

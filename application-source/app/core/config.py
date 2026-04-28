@@ -1,5 +1,13 @@
-"""Core configuration: manage environment variables and global settings using Pydantic Settings."""
+"""Core Configuration Module.
 
+Responsibilities:
+- Load and validate application settings from environment variables
+- Provide a centralized settings object for all modules
+- Define default values and configuration for external services
+
+Boundaries:
+- Does not handle logic for specific services (delegated to services layer)
+"""
 
 import os
 
@@ -7,21 +15,24 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Application settings schema"""
+    """Application-wide settings managed via Pydantic and .env."""
 
-    SITE_PASSCODE: str
-    GOOGLE_CLIENT_ID: str
-    GOOGLE_CLIENT_SECRET: str
-    API_BASE_URL: str = "http://localhost:8000"
-    STREAM_SERVICE_URL: str = "http://localhost:4000"
+    SITE_PASSCODE: str = ""
+    DATABASE_URL: str = "sqlite:///./cloudhub.db"
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
 
-    # Optional Mega credentials from environment
-    MEGA_USERNAME: str | None = None
-    MEGA_PASSWORD: str | None = None
+    # CORS allowed origins
+    CORS_ORIGINS: list[str] = ["*"]
 
-    # Directory where per-account Mega session pickles are stored.
-    # Defaults to ~/.mega_sessions/ when not set in .env.
+    # Directory for per-account Mega session persistence
     MEGA_SESSION_DIR: str = os.path.join(os.path.expanduser("~"), ".mega_sessions")
+
+    # Shared secret for internal service communication
+    INTERNAL_SECRET: str = ""
+
+    # Toggle for development-only auth bypass
+    DEBUG: bool = False
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

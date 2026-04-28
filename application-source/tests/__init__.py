@@ -1,1 +1,5 @@
-"""Initialization file for the tests package."""
+"""Tests Package Initialization.
+
+Responsibilities:
+- Mark the directory as a Python package
+"""
