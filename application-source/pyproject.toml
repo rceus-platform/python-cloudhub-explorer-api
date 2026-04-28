@@ -36,7 +36,6 @@ packages = ["app"]
 
 [tool.uv]
 managed = true
-override-dependencies = ["tenacity>=8.3.0"]
 
 [tool.pylint."MESSAGES CONTROL"]
 disable = [
