@@ -303,7 +303,7 @@ async def google_callback(
                 status_code=500,
                 detail="Failed to persist account updates"
             ) from commit_err
-    
+
     file_cache.invalidate_all(user.id)
 
     return HTMLResponse(

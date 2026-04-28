@@ -42,6 +42,11 @@ def process_image_thumbnail(
     """Download, rotate, and resize an image for use as a thumbnail."""
 
     resp = requests.get(stream_url, headers=headers, timeout=30)
+    if resp.status_code >= 400:
+        logger.error(
+            "Thumbnail request to %s failed with %d: %s",
+            stream_url, resp.status_code, resp.text
+        )
     resp.raise_for_status()
 
     img = Image.open(io.BytesIO(resp.content))
