@@ -45,6 +45,9 @@ def merge_files(file_lists: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
                 elif existing_id != f["id"]:
                     merged[key]["ids"][provider] = [existing_id, f["id"]]
 
+            # Normalize key order for consistent frontend stringification
+            merged[key]["ids"] = dict(sorted(merged[key]["ids"].items()))
+
             # Add size for files
             if f["type"] == "file":
                 merged[key]["size"] = f.get("size", 0)

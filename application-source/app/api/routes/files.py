@@ -57,6 +57,15 @@ async def list_files(
     """Retrieve a merged list of files from all linked cloud accounts."""
 
     user_id = int(user.id)  # type: ignore[arg-type]
+    
+    # Normalize folder_id if it's a JSON string to ensure consistent cache keys
+    if folder_id != "root":
+        try:
+            data = json.loads(folder_id)
+            if isinstance(data, dict):
+                folder_id = json.dumps(data, sort_keys=True)
+        except (json.JSONDecodeError, TypeError):
+            pass
 
     # 1. Check in-memory TTL cache
     if not refresh:

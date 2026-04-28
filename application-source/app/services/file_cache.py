@@ -16,8 +16,8 @@ from typing import Any
 # In-memory storage: _CACHE[key] = (timestamp, data)
 _CACHE: dict[str, tuple[float, Any]] = {}
 
-# Default time-to-live in seconds (5 minutes)
-DEFAULT_TTL: int = 5 * 60
+# Default time-to-live in seconds (30 minutes)
+DEFAULT_TTL: int = 30 * 60
 
 def _make_key(user_id: int, folder_id: str) -> str:
     """Build a namespaced cache key to isolate user data."""
