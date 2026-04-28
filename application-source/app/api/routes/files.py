@@ -57,7 +57,7 @@ async def list_files(
     """Retrieve a merged list of files from all linked cloud accounts."""
 
     user_id = int(user.id)  # type: ignore[arg-type]
-    
+
     # Normalize folder_id if it's a JSON string to ensure consistent cache keys
     if folder_id != "root":
         try:
@@ -93,9 +93,7 @@ async def list_files(
             # Filter accounts to only those present in the folder map
             accounts = [acc for acc in accounts if acc.provider in folder_map]
         except (json.JSONDecodeError, TypeError) as exc:
-            raise HTTPException(
-                status_code=400, detail="Invalid folder_id format"
-            ) from exc
+            raise HTTPException(status_code=400, detail="Invalid folder_id format") from exc
 
     # 3. Fetch from cloud accounts (Final fallback or if refresh=True)
     merged_files = await library_service.list_all_files(db, accounts, target_folder_id)
@@ -154,9 +152,7 @@ def stream_file(
     print(f"DEBUG: Upstream headers: {dict(response.headers)}")
 
     if response.status_code >= 400:
-        raise HTTPException(
-            status_code=response.status_code, detail="Stream source error"
-        )
+        raise HTTPException(status_code=response.status_code, detail="Stream source error")
 
     def generate():
         try:
@@ -170,9 +166,7 @@ def stream_file(
         generate(),
         status_code=response.status_code,
         headers={
-            "Content-Type": response.headers.get(
-                "Content-Type", get_media_type(file_name)
-            ),
+            "Content-Type": response.headers.get("Content-Type", get_media_type(file_name)),
             "Content-Length": response.headers.get("Content-Length", ""),
             "Accept-Ranges": "bytes",
             "Content-Range": response.headers.get("Content-Range", ""),
@@ -197,9 +191,7 @@ def get_thumbnail(
     # Check cache/db first for standard thumbnails
     if timestamp is None:
         metadata = (
-            db.query(models.FileMetadata)
-            .filter(models.FileMetadata.file_id == file_id)
-            .first()
+            db.query(models.FileMetadata).filter(models.FileMetadata.file_id == file_id).first()
         )
         if metadata and metadata.thumbnail_path:  # type: ignore[return-value]
             thumbnail_path_str = str(metadata.thumbnail_path)
@@ -293,17 +285,11 @@ async def update_thumbnail(
             if settings.INTERNAL_SECRET:
                 headers["X-Internal-Secret"] = settings.INTERNAL_SECRET
 
-        thumbnail_service.extract_video_frame(
-            stream_url, headers, cache_path, timestamp
-        )
+        thumbnail_service.extract_video_frame(stream_url, headers, cache_path, timestamp)
     else:
         raise HTTPException(status_code=400, detail="Missing timestamp or file")
 
     thumbnail_service.save_metadata(db, file_id, provider, None, None, None, None)
-    metadata = (
-        db.query(models.FileMetadata)
-        .filter(models.FileMetadata.file_id == file_id)
-        .first()
-    )
+    metadata = db.query(models.FileMetadata).filter(models.FileMetadata.file_id == file_id).first()
     updated_at = int(metadata.updated_at) if metadata else 0  # type: ignore[arg-type]
     return ThumbnailUpdateResponse(success=True, updated_at=updated_at)
