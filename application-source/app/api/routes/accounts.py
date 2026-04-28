@@ -194,7 +194,7 @@ async def google_callback(
     """Handle the Google OAuth2 callback and persist tokens."""
 
     # Authenticate user using the token passed in state
-    user = get_current_user(token=state, db=db)
+    user = get_current_user(credentials=None, token=state, db=db)
 
     flow = Flow.from_client_config(  # type: ignore[no-untyped-call]
         {
