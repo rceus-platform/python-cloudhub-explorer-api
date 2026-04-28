@@ -12,7 +12,7 @@ Boundaries:
 
 import asyncio
 import os
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from google_auth_oauthlib.flow import Flow  # type: ignore[import]
 from sqlalchemy.exc import IntegrityError
@@ -148,7 +148,10 @@ def disconnect_account(
 
 
 @router.get("/google/login", response_model=AuthUrlResponse)
-def google_login() -> AuthUrlResponse:
+def google_login(
+    request: Request,
+    user: models.User = Depends(get_current_user)
+) -> AuthUrlResponse:
     """Initiate the Google OAuth2 authorization flow."""
 
     flow = Flow.from_client_config(  # type: ignore[no-untyped-call]
@@ -169,9 +172,14 @@ def google_login() -> AuthUrlResponse:
 
     flow.redirect_uri = settings.GOOGLE_REDIRECT_URI
 
+    # Extract raw token from Authorization header to pass as state
+    auth_header = request.headers.get("Authorization")
+    token = auth_header.split(" ")[1] if auth_header and " " in auth_header else ""
+
     auth_url, _ = flow.authorization_url(  # type: ignore[no-untyped-call]
         access_type="offline",
         prompt="consent",
+        state=token
     )
 
     return AuthUrlResponse(auth_url=auth_url)  # type: ignore[return-value]
@@ -180,10 +188,13 @@ def google_login() -> AuthUrlResponse:
 @router.get("/google/callback")
 async def google_callback(
     code: str,
+    state: str,
     db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
 ):
     """Handle the Google OAuth2 callback and persist tokens."""
+
+    # Authenticate user using the token passed in state
+    user = get_current_user(token=state, db=db)
 
     flow = Flow.from_client_config(  # type: ignore[no-untyped-call]
         {
