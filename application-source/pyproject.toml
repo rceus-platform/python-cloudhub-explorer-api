@@ -16,7 +16,6 @@ dependencies = [
     "google-api-python-client==2.149.0",
     "google-auth-httplib2==0.2.0",
     "google-auth-oauthlib==1.2.1",
-    "tenacity>=8.3.0",
     "mega.py==1.0.8",
     "pydantic-settings==2.2.1",
     "Pillow",
