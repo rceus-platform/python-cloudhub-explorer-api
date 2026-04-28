@@ -230,8 +230,15 @@ fi
 # ================================
 # SYSTEMD (Only for persistent services)
 # ================================
-if [ "$RUNTIME" = "python" ]; then
-  echo "🔧 Creating systemd service"
+if [ "$RUNTIME" = "python" ] || [ "$RUNTIME" = "node" ]; then
+  echo "🔧 Creating systemd service for $RUNTIME"
+# If START_CMD starts with / or is a known global command, don't prefix with APP_WORKDIR
+if [[ "$START_CMD" == /* ]] || [[ "$START_CMD" == node* ]] || [[ "$START_CMD" == python* ]] || [[ "$START_CMD" == npm* ]]; then
+  EXEC_PATH="$START_CMD"
+else
+  EXEC_PATH="${APP_WORKDIR}/${START_CMD}"
+fi
+
   sudo tee "/etc/systemd/system/${APP_NAME}.service" > /dev/null <<EOF
 [Unit]
 Description=${APP_NAME}
@@ -248,7 +255,7 @@ Environment=TZ=${TIMEZONE}
 Environment=PYTHONPATH=${APP_WORKDIR}
 Environment=PATH=/home/ubuntu/.local/bin:/usr/bin:/bin
 
-ExecStart=${APP_WORKDIR}/${START_CMD}
+ExecStart=${EXEC_PATH}
 
 Restart=always
 RestartSec=3

@@ -9,7 +9,7 @@ Boundaries:
 - Does not define the database schema (delegated to db.models)
 """
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from app.core.config import settings
@@ -20,6 +20,19 @@ engine = create_engine(
     settings.DATABASE_URL,
     connect_args={"check_same_thread": False} if is_sqlite else {},
 )
+
+
+# Enable WAL mode for SQLite to improve performance and concurrency
+@event.listens_for(engine, "connect")
+def set_sqlite_pragma(dbapi_connection, _connection_record):
+    """Enable WAL mode for SQLite connections to improve concurrency."""
+
+    if is_sqlite:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.close()
+
 
 # Session factory for generating database connections
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

@@ -14,6 +14,7 @@ Boundaries:
 import io
 import json
 import os
+import threading
 
 import requests
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
@@ -31,6 +32,9 @@ from app.services.gdrive_service import get_valid_access_token
 from app.utils.file_utils import get_media_type
 
 router = APIRouter()
+
+# Global semaphore to limit concurrent thumbnail extractions (prevents OOM on small VMs)
+thumbnail_semaphore = threading.Semaphore(2)
 
 
 def _resolve_account(
@@ -225,13 +229,14 @@ def get_thumbnail(
             if settings.INTERNAL_SECRET:
                 headers["X-Internal-Secret"] = settings.INTERNAL_SECRET
 
-        if is_image:
-            thumbnail_service.process_image_thumbnail(stream_url, headers, cache_path)
-            duration, width, height = 0, None, None
-        else:
-            duration, width, height = thumbnail_service.extract_video_frame(
-                stream_url, headers, cache_path, timestamp
-            )
+        with thumbnail_semaphore:
+            if is_image:
+                thumbnail_service.process_image_thumbnail(stream_url, headers, cache_path)
+                duration, width, height = 0, None, None
+            else:
+                duration, width, height = thumbnail_service.extract_video_frame(
+                    stream_url, headers, cache_path, timestamp
+                )
 
         if timestamp is None:
             thumbnail_service.save_metadata(

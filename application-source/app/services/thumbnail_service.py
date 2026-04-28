@@ -100,7 +100,7 @@ def extract_video_frame(
 
     # Frame extraction
     (
-        ffmpeg.input(stream_url, **input_args)  # type: ignore[no-untyped-call]
+        ffmpeg.input(stream_url, threads=1, **input_args)  # type: ignore[no-untyped-call]
         .filter(  # type: ignore[no-untyped-call]
             "setparams", color_primaries="bt709", color_trc="bt709", colorspace="bt709"
         )

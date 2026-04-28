@@ -14,7 +14,7 @@ jobs:
           host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
-          envs: GITHUB_REPOSITORY,SITE_PASSCODE,GOOGLE_CLIENT_ID,GOOGLE_CLIENT_SECRET,GOOGLE_REDIRECT_URI,SECRET_KEY,FERNET_KEY
+          envs: GITHUB_REPOSITORY,SITE_PASSCODE,GOOGLE_CLIENT_ID,GOOGLE_CLIENT_SECRET,GOOGLE_REDIRECT_URI,SECRET_KEY,FERNET_KEY,INTERNAL_SECRET
           script: |
             set -e
 
@@ -50,3 +50,4 @@ jobs:
           GOOGLE_REDIRECT_URI: ${{ secrets.GOOGLE_REDIRECT_URI }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
           FERNET_KEY: ${{ secrets.FERNET_KEY }}
+          INTERNAL_SECRET: ${{ secrets.INTERNAL_SECRET }}
