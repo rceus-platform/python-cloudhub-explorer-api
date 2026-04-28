@@ -1,10 +1,5 @@
-"""
-Core Configuration Module
+"""Core configuration: manage environment variables and global settings using Pydantic Settings."""
 
-Responsibilities:
-- Manage environment variables using Pydantic Settings
-- Define global application settings and secrets
-"""
 
 import os
 
@@ -17,6 +12,8 @@ class Settings(BaseSettings):
     SITE_PASSCODE: str
     GOOGLE_CLIENT_ID: str
     GOOGLE_CLIENT_SECRET: str
+    API_BASE_URL: str = "http://localhost:8000"
+    STREAM_SERVICE_URL: str = "http://localhost:4000"
 
     # Optional Mega credentials from environment
     MEGA_USERNAME: str | None = None

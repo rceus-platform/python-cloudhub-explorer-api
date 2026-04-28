@@ -94,15 +94,31 @@ export const fetchUser = async (id: string) => apiClient.get(`/users/${id}`);
 // src/features/user/hooks/useUser.ts
 export const useUser = (id: string) => {
   const [data, setData] = useState<User | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let isMounted = true;
+    setLoading(true);
+    setError(null);
+
     fetchUser(id)
-      .then((res) => setData(res.data))
-      .finally(() => setLoading(false));
+      .then((res) => {
+        if (isMounted) setData(res.data);
+      })
+      .catch((err) => {
+        if (isMounted) setError(transformStandardError(err));
+      })
+      .finally(() => {
+        if (isMounted) setLoading(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
   }, [id]);
 
-  return { data, loading };
+  return { data, loading, error };
 };
 ```
 
@@ -142,6 +158,7 @@ Maintain high clarity without clutter. Focus on "what" and "why", not "how".
 - **Prefer Single-Line**: Keep descriptions as concise as possible.
 - Avoid repeating obvious information or duplicating TypeScript types in comments.
 - **File-Level Mandatory**: Every single file MUST have the module-level docstring template at the top.
+- **No Section Banners**: Do NOT use decorative section headers or banners (e.g., `# -------------------------`). Use clear naming and logical grouping instead.
 
 ## 5. Strict Discipline & Anti-Patterns (FAANG-Level)
 
@@ -159,16 +176,20 @@ Follow these rules for all Python development to ensure production-grade quality
 ## 1. Documentation & Readability
 
 - **Mandatory Docstrings**: Every module, class, and public function/method must have a **single-line docstring** using `"""Triple double quotes"""`. **Modules and classes must never be left undocumented.**
-- **Formatting**: Add exactly one empty line immediately following any docstring. Keep lines strictly under 100 characters. No trailing whitespace allowed on any line.
+- **Formatting**: Add exactly one empty line immediately following any docstring. Keep lines strictly under 100 characters. Use Black-style formatting: multi-line function calls/definitions should have one argument per line with a trailing comma to ensure clean diffs and readability. No trailing whitespace allowed on any line.
+- **No Inline Comments**: Do NOT use inline comments (comments on the same line as code). If an explanation is absolutely necessary, place it on the line *before* the code. Prefer self-documenting code over comments.
 - **Indentation**: Never put multiple statements on a single line (avoid `if x: return y`). Use parentheses for multi-line expressions and strings to maintain readability.
 
 ## 2. Imports & Best Practices
 
 - **Ordering**: Organize imports: 1. Standard Library, 2. Third-party, 3. Local (separated by single newlines).
-- **Security**: Specify `encoding="utf-8"` in all `open()` calls.
+- **Security**: Specify `encoding="utf-8"` in all text-based `open()` calls.
+- **Exception Chaining**: Always use `raise ... from e` (or `from exc`) when re-raising exceptions to preserve the original traceback context and root cause.
+- **Empty Checks**: Use Pythonic truthiness for empty sequence checks (e.g., `if not my_list:`) instead of explicit comparisons to `[]` or `len() == 0`.
+- **SQLAlchemy Decorators**: When subclassing `TypeDecorator`, you MUST override `process_literal_param` and the `python_type` property to satisfy abstract method requirements.
 - **Closure Safety**: Fix "cell variable defined in loop" by passing loop variables as default arguments to lambdas/nested functions.
 - **No Shadowing**: Never redefine Python built-in names (e.g., `set`, `list`, `id`, `type`, `map`, `input`, `str`).
-- **No Dead Code**: Remove unused variables, arguments, and imports immediately.
+- **No Dead Code**: Remove unused variables, arguments, and imports immediately. Unused imports in `__init__.py` files should be explicitly listed in `__all__` or suppressed with `# noqa: F401`.
 
 ## 3. IDE Interpreter Configuration (NOT a Code Bug)
 
@@ -182,10 +203,19 @@ Follow these rules for all Python development to ensure production-grade quality
   - `imported but unused` — remove the import immediately.
   - Actual syntax errors or type errors (severity `error`, not `warning`).
 
-## 4. Performance & Logging
+## 4. Production-Grade Logging Standards
 
-- **Structured Logging**: Use contextual metadata in all logs.
-- **Asynchronous I/O**: Use `asyncio` for I/O bound tasks wherever applicable.
+- **Logger Initialization**: Use `logger = logging.getLogger(__name__)` at the top of every module.
+- **Exception Logging**: Inside `except` blocks, ALWAYS use `logger.exception("Descriptive error message")`. This automatically captures the full stack trace. Never use `logger.error` for exceptions unless you explicitly want to suppress the traceback.
+- **Log Level Discipline**:
+    - `INFO`: Significant business milestones (e.g., "Linked new GDrive account", "File merge completed").
+    - `WARNING`: Non-fatal issues or recoverable errors (e.g., "Retrying MEGA session login", "Cache miss").
+    - `ERROR`: Operations that failed but did not crash the app (e.g., "Failed to stream file chunk").
+    - `DEBUG`: Detailed diagnostic data for developers; must not leak into production logs.
+- **Contextual Metadata**: Include relevant identifiers (e.g., `user_id`, `provider`, `file_id`) in log messages to facilitate correlation across distributed traces.
+- **Milestone Logging**: Log the entry and exit points of complex or long-running operations (e.g., "Starting multi-provider file merge", "Successfully merged 500 files").
+- **PII & Secret Sanitization**: NEVER log raw passwords, tokens, or PII. Mask emails (e.g., `te***@domain.com`) and truncate tokens.
+- **No Generic Logs**: Avoid messages like "Error occurred". Use specific, actionable messages like "Failed to refresh Google token for user 123: [specific reason]".
 
 # Workspace Management (Commented Out)
 

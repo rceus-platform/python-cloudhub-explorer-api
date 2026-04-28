@@ -1,8 +1,5 @@
-"""
-File Utilities Module.
+"""File utilities: helper functions for MIME type detection and file handling."""
 
-Provides helper functions for file handling, such as MIME type detection.
-"""
 
 import mimetypes
 

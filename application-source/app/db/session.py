@@ -1,8 +1,5 @@
-"""
-Database Session Module.
+"""Database Session: configures SQLAlchemy engine and session dependencies."""
 
-Sets up the SQLAlchemy engine and provides database dependencies.
-"""
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker

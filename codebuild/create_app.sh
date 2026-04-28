@@ -23,11 +23,18 @@ echo "➡ Creating app: $APP_NAME"
 # ================================
 # OS DEPENDENCIES (Ensures jq is available)
 # ================================
+echo "🔧 Pre-checking dependencies"
+
+if ! command -v jq &>/dev/null; then
+  echo "📦 Installing jq..."
+  sudo apt-get update -y && sudo apt-get install -y jq
+fi
+
 echo "🔧 Installing OS dependencies"
 
 install_if_missing() {
   local PKG=$1
-  if ! dpkg -l "$PKG" &>/dev/null; then
+  if ! dpkg -s "$PKG" &>/dev/null; then
     echo "📦 Installing $PKG..."
     sudo apt-get install -y "$PKG"
   else
@@ -48,7 +55,7 @@ PYTHON_PKGS=$(jq -r '.python | join(" ")' "$PACKAGES_FILE")
 # Check if we need to update apt
 NEED_UPDATE=false
 for pkg in $CORE_PKGS $BROWSER_PKGS $PYTHON_PKGS; do
-  if ! dpkg -l "$pkg" &>/dev/null; then
+  if ! dpkg -s "$pkg" &>/dev/null; then
     NEED_UPDATE=true
     break
   fi
@@ -112,7 +119,9 @@ for VAR in $ENV_VARS; do
     # Use Bash indirect expansion to get value of variable named $VAR
     VAL="${!VAR:-}"
     if [ -n "$VAL" ]; then
-        echo "${VAR}=${VAL}" >> "$TMP_ENV"
+        # Escape single quotes and wrap in single quotes to prevent injection/word-splitting
+        ESCAPED_VAL=$(echo "$VAL" | sed "s/'/'\\\\''/g")
+        echo "${VAR}='${ESCAPED_VAL}'" >> "$TMP_ENV"
     else
         echo "⚠️  Warning: $VAR is in manifest but not set in environment"
     fi
@@ -160,10 +169,15 @@ if [ "$RUNTIME" = "python" ]; then
 
   # Handle .venv compatibility
   if [ -d ".venv" ]; then
-    CUR_V=$( .venv/bin/python --version | awk '{print $2}' | cut -d. -f1,2 )
-    SYS_V=$( "$PYTHON_BIN" --version | awk '{print $2}' | cut -d. -f1,2 )
-    if [ "$CUR_V" != "$SYS_V" ]; then
-      echo "🗑️ Removing incompatible .venv ($CUR_V vs $SYS_V)"
+    if [ -x ".venv/bin/python" ]; then
+      CUR_V=$( .venv/bin/python --version | awk '{print $2}' | cut -d. -f1,2 )
+      SYS_V=$( "$PYTHON_BIN" --version | awk '{print $2}' | cut -d. -f1,2 )
+      if [ "$CUR_V" != "$SYS_V" ]; then
+        echo "🗑️ Removing incompatible .venv ($CUR_V vs $SYS_V)"
+        sudo rm -rf .venv
+      fi
+    else
+      echo "⚠️  Found non-executable .venv. Removing."
       sudo rm -rf .venv
     fi
   fi

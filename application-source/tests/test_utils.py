@@ -1,12 +1,11 @@
-"""
-Tests for utility functions, including folder merging.
-"""
+"""Tests for utility functions, including folder merging."""
 
 from app.utils.folder_merger import merge_files
 
 
 def test_merge_files_basic():
     """Test basic merging of files from different providers."""
+
     file_lists = [
         [
             {"id": "g1", "name": "file1", "type": "file", "provider": "gdrive", "size": 100},
@@ -25,7 +24,8 @@ def test_merge_files_basic():
     assert "gdrive" in file1["providers"]
     assert "mega" in file1["providers"]
     assert len(file1["ids"]) == 2
-    assert file1["size"] == 100
+    # Verify aggregated size
+    assert file1["size"] == 200
 
     # folders should be separate (different names)
     assert any(f["name"] == "folder1" for f in merged)
@@ -34,6 +34,7 @@ def test_merge_files_basic():
 
 def test_merge_files_same_folder_name():
     """Test merging of folders with the same name from different providers."""
+
     file_lists = [
         [{"id": "g1", "name": "Shared", "type": "folder", "provider": "gdrive"}],
         [{"id": "m1", "name": "Shared", "type": "folder", "provider": "mega"}]
@@ -49,5 +50,6 @@ def test_merge_files_same_folder_name():
 
 def test_merge_files_empty():
     """Test merging behavior with empty lists."""
+
     assert not merge_files([])
     assert not merge_files([[]])

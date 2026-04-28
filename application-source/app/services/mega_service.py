@@ -1,13 +1,7 @@
-"""
-Mega Cloud Service
-
-Responsibilities:
-- Manage Mega.nz authentication and session persistence
-- Handle session caching (memory and disk) with throttle guards
-- Fetch file listings and download links from Mega
-"""
+"""Mega Cloud Service: handles authentication, session persistence, and file/link retrieval."""
 
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -19,6 +13,26 @@ from mega import Mega
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _mask_email(email: str) -> str:
+    """Produce a masked version of an email address for logging."""
+    if not email or "@" not in email:
+        return "unknown"
+    try:
+        user, domain = email.split("@", 1)
+        if len(user) <= 2:
+            return f"*@{domain}"
+        return f"{user[0]}***{user[-1]}@{domain}"
+    except Exception:
+        return "invalid-email"
+
+
+def _get_hmac(data: bytes) -> str:
+    """Generate HMAC signature for data integrity."""
+    key = os.environ.get("SECRET_KEY", "default-secret-key").encode()
+    return hmac.new(key, data, hashlib.sha256).hexdigest()
+
 
 MIN_LOGIN_INTERVAL: int = 60
 
@@ -42,40 +56,62 @@ def _session_file(email: str) -> str:
 
 
 def _load_session(email: str):
-    """Load a pickled Mega session from disk and validate it."""
+    """Load a pickled Mega session from disk with integrity check."""
 
     path = _session_file(email)
-    if not os.path.exists(path):
+    sig_path = f"{path}.sig"
+    if not os.path.exists(path) or not os.path.exists(sig_path):
         return None
 
     try:
         with open(path, "rb") as f:
-            m = pickle.load(f)
+            data = f.read()
+        with open(sig_path, "r", encoding="utf-8") as f:
+            expected_sig = f.read().strip()
+        if not hmac.compare_digest(_get_hmac(data), expected_sig):
+            logger.error("Session integrity check failed for %s", _mask_email(email))
+            return None
 
+        m = pickle.loads(data)
         m.get_quota()
-        logger.info("Reusing disk session for %s", email)
+        logger.info("Reusing disk session for %s", _mask_email(email))
         return m
-    except Exception as e:
-        logger.warning(
-            "Disk session for %s is invalid or expired (%s). Removing.", email, e
+    except Exception:
+        logger.exception(
+            "Disk session for %s is invalid or expired. Removing.", _mask_email(email)
         )
-        try:
-            os.remove(path)
-        except OSError:
-            pass
+        for p in [path, sig_path]:
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
         return None
 
 
 def _save_session(email: str, m) -> None:
-    """Pickle the logged-in Mega client to disk."""
+    """Pickle the Mega client to disk with HMAC signature."""
 
     path = _session_file(email)
+    sig_path = f"{path}.sig"
     try:
+        # Ensure directory has restricted permissions
+        os.chmod(_ensure_sessions_dir(), 0o700)
+        data = pickle.dumps(m)
+        sig = _get_hmac(data)
         with open(path, "wb") as f:
-            pickle.dump(m, f)
-        logger.info("Saved Mega session to disk for %s", email)
-    except Exception as e:
-        logger.warning("Could not save Mega session to disk for %s: %s", email, e)
+            f.write(data)
+        with open(sig_path, "w", encoding="utf-8") as f:
+            f.write(sig)
+
+        # Restrict file permissions
+        os.chmod(path, 0o600)
+        os.chmod(sig_path, 0o600)
+        logger.info("Saved Mega session to disk for %s", _mask_email(email))
+    except Exception:
+        logger.exception(
+            "Could not save Mega session to disk for %s", _mask_email(email)
+        )
 
 
 def login_to_mega(email: str, password: str):
@@ -97,10 +133,10 @@ def login_to_mega(email: str, password: str):
     _last_login_attempt[email] = now
 
     try:
-        logger.info("Attempting fresh Mega login for %s...", email)
+        logger.info("Attempting fresh Mega login for %s...", _mask_email(email))
         mega = Mega()
         m = mega.login(email, password)
-        logger.info("Successfully logged into Mega for %s", email)
+        logger.info("Successfully logged into Mega for %s", _mask_email(email))
 
         _save_session(email, m)
         _MEGA_SESSIONS[email] = m
@@ -110,23 +146,25 @@ def login_to_mega(email: str, password: str):
         logger.error(
             "Mega API returned non-JSON for %s. "
             "This usually means invalid credentials or rate limiting.",
-            email
+            _mask_email(email),
         )
         return None
-    except Exception as e:
-        logger.error("Unexpected error logging into Mega for %s: %s", email, e)
+    except Exception:
+        logger.exception(
+            "Unexpected error logging into Mega for %s", _mask_email(email)
+        )
         return None
 
 
-def get_mega_session(email: str, password: str):
+def get_mega_session(email: str, password: str | None = None):
     """Return a live Mega session, reusing one if possible."""
 
-    if not email or not password:
+    if not email:
         return None
 
     m = _MEGA_SESSIONS.get(email)
     if m is not None:
-        logger.info("Reusing in-memory session for %s", email)
+        logger.info("Reusing in-memory session for %s", _mask_email(email))
         return m
 
     m = _load_session(email)
@@ -134,21 +172,24 @@ def get_mega_session(email: str, password: str):
         _MEGA_SESSIONS[email] = m
         return m
 
+    if not password:
+        return None
+
     return login_to_mega(email, password)
 
 
 def invalidate_session(email: str) -> None:
     """Remove a broken or expired session from both memory and disk."""
 
-    logger.info("Invalidating Mega session for %s", email)
+    logger.info("Invalidating Mega session for %s", _mask_email(email))
     _MEGA_SESSIONS.pop(email, None)
 
     path = _session_file(email)
     try:
         if os.path.exists(path):
             os.remove(path)
-    except OSError as e:
-        logger.warning("Could not remove session file for %s: %s", email, e)
+    except OSError:
+        logger.exception("Could not remove session file for %s", _mask_email(email))
 
 
 def get_mega_download_url(m, file_id: str):
@@ -161,8 +202,8 @@ def get_mega_download_url(m, file_id: str):
             return None
 
         return m.get_link(file_id)
-    except Exception as e:
-        logger.error("Error getting Mega download link: %s", e)
+    except Exception:
+        logger.exception("Error fetching files for Mega account")
         return None
 
 
@@ -175,8 +216,7 @@ def list_files(
         logger.info("Fetching files from Mega for folder_id: %s", folder_id)
         files = m.get_files()
         logger.info(
-            "Successfully fetched %d nodes from Mega",
-            len(files) if files else 0
+            "Successfully fetched %d nodes from Mega", len(files) if files else 0
         )
 
         if not files:
@@ -202,10 +242,11 @@ def list_files(
                 if parent_id != folder_id:
                     continue
 
-            if file_data.get("t") in [2, 3, 4]:
+            t_val = file_data.get("t")
+            if t_val in [2, 3, 4]:
                 continue
 
-            file_type = "folder" if file_data["t"] == 1 else "file"
+            file_type = "folder" if t_val == 1 else "file"
             name = file_data.get("a", {}).get("n", "unknown")
 
             result.append(
@@ -222,6 +263,6 @@ def list_files(
 
         logger.info("Returning %d items from Mega", len(result))
         return result
-    except Exception as e:
-        logger.error("Error listing files from Mega: %s", e)
+    except Exception:
+        logger.exception("Error listing files from Mega for account %s", account_email)
         return []

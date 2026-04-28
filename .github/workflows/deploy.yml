@@ -20,11 +20,8 @@ jobs:
           script: |
             set -e
 
-            APP_NAME="$(basename $GITHUB_REPOSITORY)"
+            APP_NAME="$(basename "$GITHUB_REPOSITORY")"
             APP_DIR="/opt/apps/$APP_NAME"
-            SERVICE_NAME=$APP_NAME.service
-            QCLUSTER_SERVICE_NAME=$APP_NAME-qcluster.service
-            MANIFEST=$APP_DIR/codebuild/app.manifest.json
 
             echo "➡ Deploying $APP_NAME"
 

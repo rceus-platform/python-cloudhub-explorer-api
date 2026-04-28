@@ -1,14 +1,6 @@
-"""
-Pydantic Schemas for the API.
-
-Contains request and response schemas.
-"""
+"""Pydantic Schemas: defines request and response models for the API."""
 
 from pydantic import BaseModel, ConfigDict
-
-# -------------------------
-# Auth Schemas
-# -------------------------
 
 
 class UserCreate(BaseModel):
@@ -32,3 +24,22 @@ class UserResponse(BaseModel):
 
     id: int
     username: str
+
+
+class AccountOut(BaseModel):
+    """Safe schema for account response (excludes sensitive tokens)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    user_id: int
+    provider: str
+    email: str | None = None
+    label: str | None = None
+
+
+class AccountCreate(BaseModel):
+    """Schema for manually adding an account."""
+
+    provider: str
+    access_token: str

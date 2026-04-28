@@ -1,26 +1,26 @@
-"""
-Security Module
+"""Security Module: manages JWT token generation, verification, and cryptographic signing."""
 
-Responsibilities:
-- Manage JWT token generation and verification
-- Handle token expiration and cryptographic signing
-"""
 
-from datetime import datetime, timedelta
+import os
+from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, status
 from jose import JWTError, jwt
 
-SECRET_KEY = "your-secret-key"
+SECRET_KEY = os.environ.get("SECRET_KEY")
+if not SECRET_KEY:
+    # Fail fast if SECRET_KEY is missing in production/deployed environments
+    raise RuntimeError("SECRET_KEY environment variable is not set")
+
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
 
-def create_access_token(data: dict):
+def create_access_token(data: dict) -> str:
     """Generate a new JWT access token with expiration"""
 
     to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 

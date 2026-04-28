@@ -1,8 +1,5 @@
-"""
-Authentication API Router.
+"""Authentication API Router: handles user registration and login endpoints."""
 
-Handles user registration and login endpoints.
-"""
 
 from fastapi import APIRouter, Depends, HTTPException
 from passlib.context import CryptContext
@@ -20,9 +17,10 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # Helpers
 def hash_password(password: str):
     """Hash a password using bcrypt."""
+
     if len(password.encode("utf-8")) > 72:
         raise HTTPException(
-            status_code=400, detail="Password too long (max 72 characters)"
+            status_code=400, detail="Password too long (max 72 bytes)"
         )
     return pwd_context.hash(password)
 

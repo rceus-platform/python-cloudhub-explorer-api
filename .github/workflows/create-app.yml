@@ -18,7 +18,7 @@ jobs:
           script: |
             set -e
 
-            APP_NAME="$(basename $GITHUB_REPOSITORY)"
+            APP_NAME="$(basename "$GITHUB_REPOSITORY")"
             APP_DIR="/opt/apps/$APP_NAME"
 
             sudo mkdir -p /opt/apps

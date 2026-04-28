@@ -1,13 +1,8 @@
-"""
-Files API Router
+"""Files API Router: handles multi-provider file listing, metadata merging, and secure streaming."""
 
-Responsibilities:
-- List files and folders from multiple cloud providers
-- Handle file streaming with range support
-- Merge file lists from different sources
-"""
 
 import json
+import logging
 from urllib.parse import quote
 
 import requests
@@ -29,6 +24,8 @@ from app.services.mega_service import (
 )
 from app.services.mega_service import list_files as mega_list
 from app.utils.folder_merger import merge_files
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -57,8 +54,8 @@ def list_files(
                 )
                 if files:
                     all_file_lists.append(files)
-        except Exception as e:
-            print(f"Error with env-configured Mega login: {e}")
+        except Exception:
+            logger.exception("Error with env-configured Mega login")
             invalidate_session(settings.MEGA_USERNAME)
 
     if folder_id == "root":
@@ -80,19 +77,20 @@ def list_files(
 
                 if files:
                     all_file_lists.append(files)
-            except Exception as e:
-                print(f"Error listing files for {acc.provider}: {e}")
+            except Exception:
+                logger.exception("Error listing files for provider %s", acc.provider)
                 if acc.provider == "mega":
                     invalidate_session(acc.access_token)
                 continue
 
         merged_files = merge_files(all_file_lists)
+        logger.info("Successfully merged %d files for user %s from multiple providers", len(merged_files), user.id)
         return {"folder_id": folder_id, "files": merged_files}
 
     try:
         folder_map = json.loads(folder_id)
-    except Exception:
-        return {"error": "Invalid folder_id format"}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid folder_id format") from exc
 
     for acc in accounts:
         provider = acc.provider
@@ -119,8 +117,8 @@ def list_files(
 
             if files:
                 all_file_lists.append(files)
-        except Exception as e:
-            print(f"Error listing files for {provider}: {e}")
+        except Exception:
+            logger.exception("Error listing files for provider %s", provider)
             if provider == "mega":
                 invalidate_session(acc.access_token)
             continue
@@ -174,7 +172,6 @@ def stream_file(
         )
 
     headers = {}
-
     range_header = request.headers.get("Range")
     if range_header:
         headers["Range"] = range_header
@@ -189,20 +186,26 @@ def stream_file(
 
     elif provider == "mega":
         stream_url = (
-            f"http://localhost:4000/stream?"
+            f"{settings.STREAM_SERVICE_URL}/stream?"
             f"email={quote(account.access_token)}&"
-            f"password={quote(account.refresh_token)}&"
-            f"fileId={file_id}"
+            f"fileId={quote(file_id)}"
         )
 
         headers = {}
-
         range_header = request.headers.get("Range")
         if range_header:
             headers["Range"] = range_header
 
-        response = requests.get(stream_url, headers=headers, stream=True, timeout=60)
-        response.raise_for_status()
+        try:
+            response = requests.get(
+                stream_url, headers=headers, stream=True, timeout=60
+            )
+            response.raise_for_status()
+        except requests.exceptions.RequestException as exc:
+            logger.exception("Error connecting to Mega stream service for file %s", file_id)
+            raise HTTPException(
+                status_code=502, detail="Error communicating with streaming service"
+            ) from exc
 
         def generate_mega():
             for chunk in response.iter_content(chunk_size=1024 * 1024):
@@ -221,8 +224,14 @@ def stream_file(
             },
         )
 
-    response = requests.get(url, headers=headers, stream=True, timeout=60)
-    response.raise_for_status()
+    try:
+        response = requests.get(url, headers=headers, stream=True, timeout=60)
+        response.raise_for_status()
+    except requests.exceptions.RequestException as exc:
+        logger.exception("Error streaming from provider %s for file %s", provider, file_id)
+        raise HTTPException(
+            status_code=502, detail=f"Error streaming from {provider}"
+        ) from exc
 
     def generate_drive():
         for chunk in response.iter_content(chunk_size=1024 * 1024):

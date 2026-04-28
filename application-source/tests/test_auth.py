@@ -1,6 +1,4 @@
-"""
-Tests for the Authentication API router.
-"""
+"""Tests for the Authentication API router."""
 
 
 def test_register_success(client):

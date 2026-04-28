@@ -1,11 +1,6 @@
-"""
-Google Drive Service
+"""Google Drive Service: handles OAuth credentials, token refresh, and file listing."""
 
-Responsibilities:
-- Manage Google OAuth credentials and token refresh
-- Fetch file listings from Google Drive
-- Provide valid access tokens for streaming
-"""
+import logging
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -14,6 +9,8 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db import models
+
+logger = logging.getLogger(__name__)
 
 
 def get_valid_credentials(account: models.Account, db: Session):
@@ -33,8 +30,8 @@ def get_valid_credentials(account: models.Account, db: Session):
             account.access_token = creds.token
             db.commit()
             db.refresh(account)
-        except Exception as e:
-            print(f"Error refreshing Google token for account {account.id}: {str(e)}")
+        except Exception:
+            logger.exception("Failed to refresh Google token for account %s", account.id)
             return None
 
     return creds
@@ -94,8 +91,12 @@ def get_valid_access_token(account, db):
         client_secret=settings.GOOGLE_CLIENT_SECRET,
     )
 
-    creds.refresh(Request())
-    account.access_token = creds.token
-    db.commit()
+    try:
+        creds.refresh(Request())
+        account.access_token = creds.token
+        db.commit()
+    except Exception:
+        logger.exception("Failed to force-refresh access token for account %s", account.id)
+        raise
 
     return creds.token

@@ -20,6 +20,41 @@ This API serves as the backbone for the [CloudHub Explorer UI](https://github.co
 - **Range-Request Support**: High-performance streaming for large video files, allowing instant seeking and smooth playback.
 - **Node.js Sidecar Integration**: Leverages a specialized Node.js service for high-speed MEGA file streaming.
 
+### 🚀 Node.js Sidecar Integration
+The CloudHub Explorer API utilizes a specialized Node.js sidecar for high-performance streaming, particularly for providers like MEGA where Python-based streaming can be bottlenecked by CPU-intensive decryption.
+
+#### Prerequisites
+- **Node.js**: Version 16 or higher is required.
+
+#### Installation
+1. Navigate to the sidecar directory (typically in a sibling repo or designated folder):
+   ```bash
+   git clone https://github.com/rceus-platform/node-mega-stream-service
+   cd node-mega-stream-service
+   npm install
+   ```
+2. Build the service (if applicable):
+   ```bash
+   npm run build
+   ```
+
+#### Configuration
+Required environment variables for the sidecar:
+- `SIDE_CAR_PORT`: Port the sidecar listens on (default: `4000`)
+- `SIDE_CAR_HOST`: Host for the sidecar (default: `localhost`)
+
+#### Startup
+Launch the sidecar alongside the Python API:
+```bash
+# Start the sidecar
+npm start
+
+# Or using node directly
+node ./dist/index.js
+```
+
+For production, it is recommended to run the sidecar via `systemd` or as a service in `docker-compose`.
+
 ### 🛡️ Security & Performance
 - **Passcode Protection**: Unified access control layer via `SITE_PASSCODE`.
 - **Database Caching**: Persistent metadata caching using SQLAlchemy and SQLite for lightning-fast file lookups.

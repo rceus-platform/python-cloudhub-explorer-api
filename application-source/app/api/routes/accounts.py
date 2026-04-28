@@ -1,24 +1,18 @@
-"""
-Accounts API Router
+"""Accounts API Router: manages Google Drive and Mega account connections and credential storage."""
 
-Responsibilities:
-- Manage Google Drive and Mega account connections
-- Handle OAuth callbacks and credential storage
-
-Boundaries:
-- Does not handle file listing or streaming (handled by files.py)
-"""
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from google_auth_oauthlib.flow import Flow
-from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.dependencies import get_current_user
-from app.db import models
+from app.db import models, schemas
 from app.db.session import get_db
 from app.services.mega_service import get_mega_session
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -43,7 +37,7 @@ def google_login(_user=Depends(get_current_user)):
         ],
     )
 
-    flow.redirect_uri = "http://localhost:8000/accounts/google/callback"
+    flow.redirect_uri = f"{settings.API_BASE_URL}/accounts/google/callback"
 
     auth_url, _ = flow.authorization_url(
         access_type="offline",
@@ -77,15 +71,28 @@ def google_callback(
         ],
     )
 
-    flow.redirect_uri = "http://localhost:8000/accounts/google/callback"
+    flow.redirect_uri = f"{settings.API_BASE_URL}/accounts/google/callback"
 
-    flow.fetch_token(code=code)
-    credentials = flow.credentials
+    try:
+        flow.fetch_token(code=code)
+        credentials = flow.credentials
 
-    # Fetch user email from Google
-    session = flow.authorized_session()
-    user_info = session.get("https://www.googleapis.com/oauth2/v1/userinfo").json()
-    email = user_info.get("email")
+        # Fetch user email from Google
+        session = flow.authorized_session()
+        response = session.get("https://www.googleapis.com/oauth2/v1/userinfo")
+        response.raise_for_status()
+        user_info = response.json()
+        email = user_info.get("email")
+
+        if not email:
+            raise ValueError("No email found in Google user info")
+
+    except Exception as exc:
+        logger.exception("Error during Google OAuth callback")
+        raise HTTPException(
+            status_code=502,
+            detail="Error communicating with Google services. Please try again.",
+        ) from exc
 
     account = models.Account(
         user_id=user.id,
@@ -98,39 +105,42 @@ def google_callback(
     db.add(account)
     db.commit()
 
+    logger.info(
+        "Successfully connected Google Drive account for user %s (%s)", user.id, email
+    )
     return {"message": f"Google Drive connected successfully for {email}"}
 
 
 @router.post("/add")
 def add_account(
-    provider: str,
-    access_token: str,
+    data: schemas.AccountCreate,
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    """Manually add a cloud provider account"""
+    """Manually add a cloud provider account using JSON body"""
 
     account = models.Account(
-        user_id=user.id, provider=provider, access_token=access_token
+        user_id=user.id, provider=data.provider, access_token=data.access_token
     )
 
     db.add(account)
     db.commit()
     db.refresh(account)
 
+    logger.info("Manually added account %s for user %s", data.provider, user.id)
     return {"message": "Account added successfully"}
 
 
-@router.get("/")
+@router.get("/", response_model=list[schemas.AccountOut])
 def get_accounts(db: Session = Depends(get_db), user=Depends(get_current_user)):
-    """Retrieve all connected accounts for the current user"""
+    """Retrieve all connected accounts for the current user (safe response)"""
 
     accounts = db.query(models.Account).filter(models.Account.user_id == user.id).all()
 
     return accounts
 
 
-class MegaLoginRequest(BaseModel):
+class MegaLoginRequest(schemas.BaseModel):
     """Mega login request schema"""
 
     email: str
@@ -144,9 +154,19 @@ def mega_login(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    """Authenticate with Mega and store credentials"""
+    """Authenticate with Mega and store credentials (safely)"""
 
-    m = get_mega_session(data.email, data.password)
+    try:
+        m = get_mega_session(data.email, data.password)
+    except Exception as exc:
+        logger.exception(
+            "Unexpected error contacting Mega service during login for user %s", user.id
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="Error contacting Mega service, please try again later.",
+        ) from exc
+
     if not m:
         raise HTTPException(
             status_code=401,
@@ -158,8 +178,9 @@ def mega_login(
         provider="mega",
         email=data.email,
         label=data.label,
+        # We use email as the session key and avoid storing plaintext passwords for MEGA
         access_token=data.email,
-        refresh_token=data.password,
+        refresh_token=None,
     )
 
     db.add(account)
