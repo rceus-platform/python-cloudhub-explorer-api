@@ -14,6 +14,7 @@ Compliance Note:
 """
 
 import datetime
+
 from sqlalchemy import (
     JSON,
     BigInteger,
@@ -58,9 +59,7 @@ class Account(Base):
     storage_used = Column(BigInteger, default=0)
     storage_total = Column(BigInteger, default=0)
 
-    __table_args__ = (
-        UniqueConstraint("email", "provider", name="ix_accounts_email_provider"),
-    )
+    __table_args__ = (UniqueConstraint("email", "provider", name="ix_accounts_email_provider"),)
 
     user = relationship("User", back_populates="accounts")
 

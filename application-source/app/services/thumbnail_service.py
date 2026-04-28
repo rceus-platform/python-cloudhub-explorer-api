@@ -69,7 +69,8 @@ def extract_video_frame(
 
     seek_time = f"{timestamp}" if timestamp is not None else "60"
     input_args = {"ss": seek_time}
-    if headers:
+    # Ensure headers is a dictionary
+    if headers and isinstance(headers, dict):
         header_str = "".join([f"{k}: {v}\r\n" for k, v in headers.items()])
         input_args["headers"] = header_str
 
@@ -77,7 +78,7 @@ def extract_video_frame(
     duration, width, height = None, None, None
     if timestamp is None:
         probe_args = {}
-        if headers:
+        if headers and isinstance(headers, dict):
             header_str = "".join([f"{k}: {v}\r\n" for k, v in headers.items()])
             probe_args["headers"] = header_str
 

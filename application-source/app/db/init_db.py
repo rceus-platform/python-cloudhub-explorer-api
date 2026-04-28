@@ -12,13 +12,13 @@ from app.core.security import hash_password
 
 def init_admin_user(db: Session) -> None:
     """Ensure an 'admin' user exists with the configured SITE_PASSCODE."""
-    
+
     if not settings.SITE_PASSCODE:
         print("⚠️  No SITE_PASSCODE configured. Skipping admin user initialization.")
         return
 
     admin_user = db.query(models.User).filter(models.User.username == "admin").first()
-    
+
     if not admin_user:
         print("👤 Creating default 'admin' user...")
         admin_user = models.User(

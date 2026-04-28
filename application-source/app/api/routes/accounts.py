@@ -150,7 +150,7 @@ def disconnect_account(
 @router.get("/google/login", response_model=AuthUrlResponse)
 def google_login(
     request: Request,
-    user: models.User = Depends(get_current_user)
+    _user: models.User = Depends(get_current_user)
 ) -> AuthUrlResponse:
     """Initiate the Google OAuth2 authorization flow."""
 
@@ -273,7 +273,7 @@ async def google_callback(
             models.Account.email == info["email"],
             models.Account.provider == "gdrive"
         ).first()
-        
+
         if not existing:
             # If still not found, it might be a different integrity issue
             print(f"Failed to find existing account after IntegrityError for {info['email']}")
@@ -286,7 +286,7 @@ async def google_callback(
             raise HTTPException(
                 status_code=409,
                 detail="This Google account is already linked to another user"
-            )
+            ) from e
 
         existing.access_token = credentials.token
         if credentials.refresh_token:
@@ -299,7 +299,10 @@ async def google_callback(
         except Exception as commit_err:
             db.rollback()
             print(f"Final commit failed during account link retry: {commit_err}")
-            raise HTTPException(status_code=500, detail="Failed to persist account updates") from commit_err
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to persist account updates"
+            ) from commit_err
     
     file_cache.invalidate_all(user.id)
 
