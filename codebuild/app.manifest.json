@@ -1,0 +1,13 @@
+{
+  "runtime": "python",
+  "working_dir": "application-source",
+  "start_command": ".venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8006 --workers 1",
+  "port": 8006,
+  "domain": "cloudhub-explorer-api.rceus.duckdns.org",
+  "timezone": "Asia/Kolkata",
+  "env_vars": [
+    "SITE_PASSCODE",
+    "GOOGLE_CLIENT_ID",
+    "GOOGLE_CLIENT_SECRET"
+  ]
+}

@@ -1,0 +1,49 @@
+name: Create App on VM
+
+on:
+  workflow_dispatch:
+
+jobs:
+  create:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Provision app + secrets on VM
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          envs: GITHUB_REPOSITORY,SITE_PASSCODE,GOOGLE_CLIENT_ID,GOOGLE_CLIENT_SECRET
+          script: |
+            set -e
+
+            APP_NAME="$(basename "$GITHUB_REPOSITORY")"
+            APP_DIR="/opt/apps/$APP_NAME"
+
+            sudo mkdir -p /opt/apps
+            sudo chown -R ubuntu:ubuntu /opt/apps
+
+            if [ -d "$APP_DIR/.git" ]; then
+              echo "➡ Updating existing repository"
+              cd "$APP_DIR"
+              git fetch origin main
+              git reset --hard origin/main
+            else
+              echo "➡ Cloning repository"
+              git clone "https://github.com/${GITHUB_REPOSITORY}" "$APP_DIR"
+            fi
+
+            cd "$APP_DIR"
+
+            echo "➡ Making create_app.sh executable"
+            chmod +x codebuild/create_app.sh
+
+            echo "➡ Running repo-owned create_app.sh"
+            export APP_NAME
+
+            sudo -E bash codebuild/create_app.sh
+        env:
+          SITE_PASSCODE: ${{ secrets.SITE_PASSCODE }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}

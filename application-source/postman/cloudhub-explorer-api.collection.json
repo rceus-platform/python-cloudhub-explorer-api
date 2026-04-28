@@ -1,0 +1,305 @@
+{
+	"info": {
+		"_postman_id": "c1a2b3c4-d5e6-4f7g-8h9i-0j1k2l3m4n5o",
+		"name": "CloudHub Explorer API",
+		"description": "Unified API for managing and exploring files across multiple cloud providers (Google Drive, MEGA).",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "Auth",
+			"item": [
+				{
+					"name": "Register User",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"username\": \"testuser\",\n    \"password\": \"testpass\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/auth/register",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"auth",
+								"register"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Login",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var jsonData = pm.response.json();",
+									"if (jsonData.access_token) {",
+									"    pm.environment.set(\"jwtToken\", jsonData.access_token);",
+									"    pm.collectionVariables.set(\"jwtToken\", jsonData.access_token);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"username\": \"testuser\",\n    \"password\": \"testpass\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/auth/login",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"auth",
+								"login"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Accounts",
+			"item": [
+				{
+					"name": "List Connected Accounts",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/accounts/",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"accounts",
+								""
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Google Login URL",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/accounts/google/login",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"accounts",
+								"google",
+								"login"
+							]
+						},
+						"description": "Generates the Google OAuth2 authorization URL."
+					},
+					"response": []
+				},
+				{
+					"name": "MEGA Login",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"email\": \"user@example.com\",\n    \"password\": \"password123\",\n    \"label\": \"My Personal Mega\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/accounts/mega/login",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"accounts",
+								"mega",
+								"login"
+							]
+						},
+						"description": "Authenticates with MEGA and stores credentials for multi-account management."
+					},
+					"response": []
+				},
+				{
+					"name": "Manual Add Account",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"provider\": \"gdrive\",\n    \"access_token\": \"token_here\",\n    \"refresh_token\": \"optional_refresh_token\",\n    \"email\": \"user@example.com\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/accounts/add",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"accounts",
+								"add"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Files",
+			"item": [
+				{
+					"name": "List Files (Root)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/files/?folder_id=root",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"files",
+								""
+							],
+							"query": [
+								{
+									"key": "folder_id",
+									"value": "root"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Stream File",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/files/stream?provider=mega&file_id=123&_file_name=video.mp4&account_id=1",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"files",
+								"stream"
+							],
+							"query": [
+								{
+									"key": "provider",
+									"value": "mega"
+								},
+								{
+									"key": "file_id",
+									"value": "123"
+								},
+								{
+									"key": "_file_name",
+									"value": "video.mp4"
+								},
+								{
+									"key": "account_id",
+									"value": "1"
+								}
+							]
+						},
+						"description": "Streams a file from the provider with range-request support. Uses account_id to distinguish between multiple accounts."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Health Check",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{baseUrl}}/",
+					"host": [
+						"{{baseUrl}}"
+					]
+				}
+			},
+			"response": []
+		}
+	],
+	"auth": {
+		"type": "bearer",
+		"bearer": [
+			{
+				"key": "token",
+				"value": "{{jwtToken}}",
+				"type": "string"
+			}
+		]
+	},
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://localhost:8000",
+			"type": "string"
+		},
+		{
+			"key": "jwtToken",
+			"value": "",
+			"type": "string"
+		}
+	]
+}
