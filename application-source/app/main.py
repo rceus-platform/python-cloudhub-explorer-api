@@ -18,11 +18,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import accounts, auth, files, video
 from app.core.config import settings
 from app.core.dependencies import get_current_user, get_current_user_dev
+from app.db.init_db import init_admin_user
 from app.db.models import Base
-from app.db.session import engine
+from app.db.session import SessionLocal, engine
 
 # Initialize database schema
 Base.metadata.create_all(bind=engine)
+
+# Initialize mandatory records (e.g. admin user)
+with SessionLocal() as db:
+    init_admin_user(db)
 
 
 @asynccontextmanager

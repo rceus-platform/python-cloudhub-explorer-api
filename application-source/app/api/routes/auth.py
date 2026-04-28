@@ -11,31 +11,13 @@ Boundaries:
 """
 
 from fastapi import APIRouter, Depends, HTTPException
-from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
-from app.core.security import create_access_token
+from app.core.security import create_access_token, hash_password, verify_password
 from app.db import models, schemas
 from app.db.session import get_db
 
 router = APIRouter()
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-
-def hash_password(password: str) -> str:
-    """Hash a plain text password using bcrypt."""
-
-    if len(password.encode("utf-8")) > 72:
-        raise HTTPException(
-            status_code=400, detail="Password too long (max 72 characters)"
-        )
-    return pwd_context.hash(password)
-
-
-def verify_password(plain: str, hashed: str) -> bool:
-    """Verify a plain text password against a stored hash."""
-
-    return pwd_context.verify(plain, hashed)
 
 
 @router.post("/register", response_model=schemas.UserResponse)

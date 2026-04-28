@@ -15,15 +15,34 @@ from typing import Any
 
 from fastapi import HTTPException, status
 from jose import JWTError, jwt
+from passlib.context import CryptContext
 
 from app.core.config import settings
 
 # Security configuration (loaded from environment)
 SECRET_KEY = (
-    settings.SITE_PASSCODE
-)  # Reusing site passcode as secret key or should use a dedicated ENV
+    settings.SECRET_KEY or settings.SITE_PASSCODE
+)  # Preferred SECRET_KEY, fallback to SITE_PASSCODE for simple setups
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 1 week
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def hash_password(password: str) -> str:
+    """Hash a plain text password using bcrypt."""
+
+    if len(password.encode("utf-8")) > 72:
+        raise HTTPException(
+            status_code=400, detail="Password too long (max 72 characters)"
+        )
+    return pwd_context.hash(password)
+
+
+def verify_password(plain: str, hashed: str) -> bool:
+    """Verify a plain text password against a stored hash."""
+
+    return pwd_context.verify(plain, hashed)
 
 
 def create_access_token(data: dict[str, Any]) -> str:

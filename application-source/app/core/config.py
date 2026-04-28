@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
 
+    # Security keys (will fallback to SITE_PASSCODE if not set)
+    SECRET_KEY: str = ""
+    FERNET_KEY: str = ""
+
     # CORS allowed origins
     CORS_ORIGINS: list[str] = ["*"]
 
