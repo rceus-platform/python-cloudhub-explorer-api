@@ -51,10 +51,11 @@ fi
 CORE_PKGS=$(jq -r '.core | join(" ")' "$PACKAGES_FILE")
 BROWSER_PKGS=$(jq -r '.browser | join(" ")' "$PACKAGES_FILE")
 PYTHON_PKGS=$(jq -r '.python | join(" ")' "$PACKAGES_FILE")
+NODE_PKGS=$(jq -r '.node // [] | join(" ")' "$PACKAGES_FILE")
 
 # Check if we need to update apt
 NEED_UPDATE=false
-for pkg in $CORE_PKGS $BROWSER_PKGS $PYTHON_PKGS; do
+for pkg in $CORE_PKGS $BROWSER_PKGS $PYTHON_PKGS $NODE_PKGS; do
   if ! dpkg -s "$pkg" &>/dev/null; then
     NEED_UPDATE=true
     break
@@ -67,7 +68,7 @@ if [ "$NEED_UPDATE" = true ]; then
 fi
 
 # Install all dependencies
-for pkg in $CORE_PKGS $BROWSER_PKGS $PYTHON_PKGS; do
+for pkg in $CORE_PKGS $BROWSER_PKGS $PYTHON_PKGS $NODE_PKGS; do
   install_if_missing "$pkg"
 done
 
@@ -204,8 +205,13 @@ if [ "$RUNTIME" = "python" ]; then
 
     echo "🎨 Collecting static files..."
     sudo -u "$DEPLOY_USER" .venv/bin/python manage.py collectstatic --noinput
+  elif [ -f "app/main.py" ]; then
+    echo "🚀 FastAPI app detected. Initializing database schema..."
+    # Attempt to initialize DB schema if models are present
+    sudo -u "$DEPLOY_USER" .venv/bin/python -c "try: from app.db.models import Base; from app.db.session import engine; Base.metadata.create_all(bind=engine); print('✅ Database schema initialized')
+except Exception as e: print(f'ℹ️ Database auto-init skipped or failed: {e}')"
   else
-    echo "ℹ️ No manage.py found. Skipping Django-specific steps."
+    echo "ℹ️ No manage.py or app/main.py found. Skipping database-specific steps."
   fi
 fi
 
@@ -228,16 +234,41 @@ if [ "$RUNTIME" = "react" ]; then
 fi
 
 # ================================
+# RUNTIME SETUP (Node.js)
+# ================================
+if [ "$RUNTIME" = "node" ]; then
+  echo "🟢 Node.js setup"
+
+  if [ -f "package.json" ]; then
+    echo "📦 Installing NPM dependencies"
+    sudo -u "$DEPLOY_USER" npm install
+  else
+    echo "⚠️ Warning: Runtime is node but no package.json found."
+  fi
+fi
+
+# ================================
 # SYSTEMD (Only for persistent services)
 # ================================
 if [ "$RUNTIME" = "python" ] || [ "$RUNTIME" = "node" ]; then
   echo "🔧 Creating systemd service for $RUNTIME"
-# If START_CMD starts with / or is a known global command, don't prefix with APP_WORKDIR
-if [[ "$START_CMD" == /* ]] || [[ "$START_CMD" == node* ]] || [[ "$START_CMD" == python* ]] || [[ "$START_CMD" == npm* ]]; then
-  EXEC_PATH="$START_CMD"
-else
-  EXEC_PATH="${APP_WORKDIR}/${START_CMD}"
-fi
+
+  # Determine EXEC_PATH and handle absolute/global commands
+  if [[ "$START_CMD" == /* ]] || [[ "$START_CMD" == node* ]] || [[ "$START_CMD" == python* ]] || [[ "$START_CMD" == npm* ]]; then
+    # If it's a Node app and memory limit isn't set, inject it
+    if [ "$RUNTIME" = "node" ] && [[ "$START_CMD" == node* ]] && [[ "$START_CMD" != *"--max-old-space-size"* ]]; then
+      EXEC_PATH="/usr/bin/node --max-old-space-size=256 ${START_CMD#node}"
+    else
+      EXEC_PATH="$START_CMD"
+    fi
+  else
+    # Default behavior: run from WORKDIR
+    if [ "$RUNTIME" = "node" ]; then
+      EXEC_PATH="/usr/bin/node --max-old-space-size=256 ${APP_WORKDIR}/${START_CMD:-index.js}"
+    else
+      EXEC_PATH="${APP_WORKDIR}/${START_CMD}"
+    fi
+  fi
 
   sudo tee "/etc/systemd/system/${APP_NAME}.service" > /dev/null <<EOF
 [Unit]
@@ -252,8 +283,8 @@ UMask=0002
 $(if [ -n "$APP_SECRET_PATH" ]; then echo "Environment=APP_SECRET_JSON=${APP_SECRET_PATH}"; fi)
 EnvironmentFile=-${APP_WORKDIR}/.env
 Environment=TZ=${TIMEZONE}
-Environment=PYTHONPATH=${APP_WORKDIR}
-Environment=PATH=/home/ubuntu/.local/bin:/usr/bin:/bin
+$(if [ "$RUNTIME" = "python" ]; then echo "Environment=PYTHONPATH=${APP_WORKDIR}"; fi)
+Environment=PATH=/home/ubuntu/.local/bin:/usr/bin:/bin:/usr/local/bin
 
 ExecStart=${EXEC_PATH}
 
@@ -283,7 +314,7 @@ if [ "$RUNTIME" = "react" ]; then
     try_files \$uri \$uri/ /index.html;
   }"
 else
-  # Python: Proxy to the local port + static/media
+  # Python/Node: Proxy to the local port + static/media
   NGINX_LOCATIONS="
   location /static/ {
     alias ${APP_WORKDIR}/staticfiles/;
@@ -312,6 +343,10 @@ server {
   listen 80;
   server_name ${DOMAIN};
 
+  client_max_body_size 100M;
+  gzip on;
+  gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
+
   ${NGINX_LOCATIONS}
 }
 
@@ -324,6 +359,10 @@ server {
 
   ssl_protocols TLSv1.2 TLSv1.3;
   ssl_ciphers HIGH:!aNULL:!MD5;
+
+  client_max_body_size 100M;
+  gzip on;
+  gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
 
   ${NGINX_LOCATIONS}
 }
