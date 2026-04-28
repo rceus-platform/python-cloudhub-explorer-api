@@ -190,6 +190,9 @@ if [ "$RUNTIME" = "python" ]; then
   echo "📦 Installing Python dependencies"
   sudo -u "$DEPLOY_USER" "$POETRY_BIN" install --no-root --no-interaction
 
+  echo "🔧 Upgrading tenacity for Python 3.12+ compatibility"
+  sudo -u "$DEPLOY_USER" .venv/bin/pip install --quiet "tenacity>=8.0.0"
+
   if [ ! -d ".venv" ]; then
     echo "❌ .venv not created"
     exit 1
