@@ -33,9 +33,7 @@ def hash_password(password: str) -> str:
     """Hash a plain text password using bcrypt."""
 
     if len(password.encode("utf-8")) > 72:
-        raise HTTPException(
-            status_code=400, detail="Password too long (max 72 characters)"
-        )
+        raise HTTPException(status_code=400, detail="Password too long (max 72 characters)")
     return pwd_context.hash(password)
 
 

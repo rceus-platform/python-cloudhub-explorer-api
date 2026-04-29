@@ -24,16 +24,12 @@ router = APIRouter()
 def register(user: schemas.UserCreate, db: Session = Depends(get_db)):
     """Create a new user account with hashed credentials."""
 
-    existing_user = (
-        db.query(models.User).filter(models.User.username == user.username).first()
-    )
+    existing_user = db.query(models.User).filter(models.User.username == user.username).first()
 
     if existing_user:
         raise HTTPException(status_code=400, detail="User already exists")
 
-    new_user = models.User(
-        username=user.username, password_hash=hash_password(user.password)
-    )
+    new_user = models.User(username=user.username, password_hash=hash_password(user.password))
 
     db.add(new_user)
     db.commit()
@@ -46,9 +42,7 @@ def register(user: schemas.UserCreate, db: Session = Depends(get_db)):
 def login(user: schemas.UserLogin, db: Session = Depends(get_db)):
     """Authenticate a user and return a JWT access token."""
 
-    db_user = (
-        db.query(models.User).filter(models.User.username == user.username).first()
-    )
+    db_user = db.query(models.User).filter(models.User.username == user.username).first()
 
     if not db_user or not verify_password(user.password, str(db_user.password_hash)):
         raise HTTPException(status_code=401, detail="Invalid credentials")

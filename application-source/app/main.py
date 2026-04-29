@@ -10,6 +10,7 @@ Boundaries:
 - Does not handle raw database queries (delegated to models/session)
 """
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -21,6 +22,13 @@ from app.core.dependencies import get_current_user, get_current_user_dev
 from app.db.init_db import init_admin_user
 from app.db.models import Base
 from app.db.session import SessionLocal, engine
+
+# Configure standard logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s:     %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 # Initialize database schema
 Base.metadata.create_all(bind=engine)
@@ -35,10 +43,10 @@ async def lifespan(_: FastAPI):
     """Manage application startup and shutdown events."""
 
     # Startup
-    print("Server started successfully")
+    logger.info("Server started successfully")
     yield
     # Shutdown
-    print("Server shutting down")
+    logger.info("Server shutting down")
 
 
 app = FastAPI(
@@ -55,6 +63,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Range", "Accept-Ranges", "Content-Length"],
 )
 
 # Mount Routers

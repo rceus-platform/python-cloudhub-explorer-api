@@ -21,6 +21,7 @@ from app.db.session import get_db
 
 security = HTTPBearer(auto_error=False)
 
+
 def get_current_user_dev() -> Any:
     """Mock user dependency for local development and testing."""
 
@@ -28,7 +29,9 @@ def get_current_user_dev() -> Any:
         """Dummy user object for development purposes."""
 
         id = 1
+
     return DummyUser()
+
 
 def _resolve_raw_token(
     credentials: HTTPAuthorizationCredentials | None,
@@ -41,6 +44,7 @@ def _resolve_raw_token(
     if token is not None:
         return token
     return None
+
 
 def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
@@ -68,6 +72,7 @@ def get_current_user(
         raise HTTPException(status_code=404, detail="User not found")
 
     return user
+
 
 def get_current_user_optional(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),

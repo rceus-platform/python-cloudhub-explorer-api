@@ -19,10 +19,12 @@ _CACHE: dict[str, tuple[float, Any]] = {}
 # Default time-to-live in seconds (30 minutes)
 DEFAULT_TTL: int = 30 * 60
 
+
 def _make_key(user_id: int, folder_id: str) -> str:
     """Build a namespaced cache key to isolate user data."""
 
     return f"user:{user_id}:folder:{folder_id}"
+
 
 def get(user_id: int, folder_id: str) -> Any | None:
     """Retrieve non-expired data from the cache; returns None on miss or expiry."""
@@ -38,17 +40,20 @@ def get(user_id: int, folder_id: str) -> Any | None:
         return None
     return data
 
+
 def set_data(user_id: int, folder_id: str, data: Any) -> None:
     """Persist data in the cache with the current monotonic timestamp."""
 
     key = _make_key(user_id, folder_id)
     _CACHE[key] = (time.monotonic(), data)
 
+
 def invalidate(user_id: int, folder_id: str) -> None:
     """Manually remove a specific folder entry from the cache."""
 
     key = _make_key(user_id, folder_id)
     _CACHE.pop(key, None)
+
 
 def invalidate_all(user_id: int) -> None:
     """Wipe all cached entries for a specific user."""

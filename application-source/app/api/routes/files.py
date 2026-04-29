@@ -13,6 +13,7 @@ Boundaries:
 
 import io
 import json
+import logging
 import os
 import threading
 
@@ -30,6 +31,8 @@ from app.db.session import get_db
 from app.services import account_service, file_cache, library_service, thumbnail_service
 from app.services.gdrive_service import get_valid_access_token
 from app.utils.file_utils import get_media_type
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -152,8 +155,8 @@ def stream_file(
         raise HTTPException(status_code=400, detail="Unsupported provider")
 
     response = requests.get(url, headers=headers, stream=True, timeout=30)
-    print(f"DEBUG: Upstream {provider} response: {response.status_code}")
-    print(f"DEBUG: Upstream headers: {dict(response.headers)}")
+    logger.debug("Upstream %s response: %s", provider, response.status_code)
+    logger.debug("Upstream headers: %s", dict(response.headers))
 
     if response.status_code >= 400:
         raise HTTPException(status_code=response.status_code, detail="Stream source error")
@@ -244,9 +247,9 @@ def get_thumbnail(
             )
 
         return FileResponse(cache_path)
-    except Exception as e:
-        print(f"Thumbnail extraction failed: {e}")
-        raise HTTPException(status_code=404, detail="Thumbnail not found") from e
+    except Exception as exc:
+        logger.exception("Thumbnail extraction failed")
+        raise HTTPException(status_code=404, detail="Thumbnail not found") from exc
 
 
 @router.patch("/{file_id}/thumbnail", response_model=ThumbnailUpdateResponse)
@@ -254,6 +257,7 @@ async def update_thumbnail(
     file_id: str,
     provider: str = Query(...),
     timestamp: int | None = Query(None),
+    duration: float | None = Query(None),
     file: UploadFile | None = File(None),
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
@@ -290,11 +294,19 @@ async def update_thumbnail(
             if settings.INTERNAL_SECRET:
                 headers["X-Internal-Secret"] = settings.INTERNAL_SECRET
 
-        thumbnail_service.extract_video_frame(stream_url, headers, cache_path, timestamp)
+        extracted_duration, _, _ = thumbnail_service.extract_video_frame(
+            stream_url, headers, cache_path, timestamp
+        )
+        if duration is None and extracted_duration is not None:
+            duration = extracted_duration
     else:
         raise HTTPException(status_code=400, detail="Missing timestamp or file")
 
-    thumbnail_service.save_metadata(db, file_id, provider, None, None, None, None)
+    thumbnail_service.save_metadata(db, file_id, provider, None, duration, None, None)
     metadata = db.query(models.FileMetadata).filter(models.FileMetadata.file_id == file_id).first()
     updated_at = int(metadata.updated_at) if metadata else 0  # type: ignore[arg-type]
+
+    # Invalidate cache so frontend polling picks it up
+    file_cache.invalidate_all(int(user.id))
+
     return ThumbnailUpdateResponse(success=True, updated_at=updated_at)

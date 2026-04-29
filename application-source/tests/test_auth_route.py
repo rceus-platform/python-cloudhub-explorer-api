@@ -29,9 +29,7 @@ def test_register_success(mock_db):
     mock_user = MagicMock()
     mock_user.id = 1
     mock_user.username = "newuser"
-    mock_db.add.side_effect = lambda u: setattr(
-        u, "id", 1
-    )  # Simulate DB auto-increment
+    mock_db.add.side_effect = lambda u: setattr(u, "id", 1)  # Simulate DB auto-increment
     mock_db.commit.return_value = None
     mock_db.refresh.side_effect = lambda u: setattr(u, "id", 1)
 

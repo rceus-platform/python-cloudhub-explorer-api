@@ -1,4 +1,5 @@
 """Tests for the account service."""
+
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -53,9 +54,7 @@ def test_get_user_accounts_prefers_db(mock_db):
 def test_get_provider_account_env_fallback(mock_db):
     """Test retrieving a specific provider account with environment fallback."""
     # Mock DB returns None
-    mock_db.query.return_value.filter.return_value.order_by.return_value.first.return_value = (
-        None
-    )
+    mock_db.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
 
     account = get_provider_account(mock_db, user_id=1, provider="mega")
 

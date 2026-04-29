@@ -42,7 +42,8 @@ def test_extract_video_frame_ffmpeg_calls(mock_probe, mock_input):
     token = "secret_token"
     cache_path = "/tmp/test.jpg"
 
-    duration, width, height = extract_video_frame(stream_url, token, cache_path)
+    headers = {"Authorization": f"Bearer {token}"}
+    duration, width, height = extract_video_frame(stream_url, headers, cache_path)
 
     # Verify duration and resolution extraction
     assert duration == 120.5
@@ -51,7 +52,7 @@ def test_extract_video_frame_ffmpeg_calls(mock_probe, mock_input):
 
     # Verify FFmpeg input was called with the correct URL and headers
     mock_input.assert_called_once_with(
-        stream_url, ss="60", headers="Authorization: Bearer secret_token\r\n"
+        stream_url, threads=1, ss="60", headers="Authorization: Bearer secret_token\r\n"
     )
 
     # Verify filter was applied (AV1 fixes)
@@ -61,5 +62,5 @@ def test_extract_video_frame_ffmpeg_calls(mock_probe, mock_input):
 
     # Verify output was called with correct parameters
     mock_chain.output.assert_called_once_with(
-        cache_path, vframes=1, vcodec="mjpeg", format="image2", **{"qscale:v": 2}
+        cache_path, vframes=1, vcodec="mjpeg", format="image2", **{"qscale:v": 4}
     )

@@ -51,7 +51,8 @@ class Account(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"))
     email = Column(String, index=True)
-    provider = Column(String, nullable=False)  # e.g., 'gdrive', 'mega'
+    # e.g., 'gdrive', 'mega'
+    provider = Column(String, nullable=False)
     access_token = Column(String, nullable=False)
     refresh_token = Column(String, nullable=True)
     sid_or_token = Column(String, nullable=True)
@@ -73,7 +74,8 @@ class FileCache(Base):
     name = Column(String, nullable=False)
     path = Column(String, index=True)
     provider = Column(String)
-    type = Column(String)  # 'file', 'folder', 'video', 'image'
+    # 'file', 'folder', 'video', 'image'
+    type = Column(String)
     size = Column(Integer)
     parent_folder = Column(String)
 

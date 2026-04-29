@@ -1,7 +1,6 @@
 """Mega Service Module for managing MEGA.nz sessions, file operations, and storage metrics."""
 
 import hashlib
-import json
 import logging
 import os
 import pickle
@@ -75,6 +74,11 @@ def login_to_mega(email: str, password: str):
     now = time.monotonic()
     last = _last_login_attempt.get(email, 0.0)
     if now - last < MIN_LOGIN_INTERVAL:
+        logger.info(
+            "MEGA login throttled for %s (retry in %ds)",
+            email,
+            int(MIN_LOGIN_INTERVAL - (now - last)),
+        )
         return None
 
     _last_login_attempt[email] = now
@@ -84,7 +88,8 @@ def login_to_mega(email: str, password: str):
         _save_session(email, m)
         _MEGA_SESSIONS[email] = m
         return m
-    except (json.JSONDecodeError, Exception):
+    except Exception as e:
+        logger.error("MEGA login failed for %s: %s", email, e)
         return None
 
 
@@ -103,7 +108,11 @@ def get_mega_session(email: str, password: str) -> Any:  # type: ignore[no-untyp
         _MEGA_SESSIONS[email] = m
         return m
 
-    return login_to_mega(email, password)
+    m = login_to_mega(email, password)
+    if m is None:
+        # Clear any stale disk session that might block future attempts
+        invalidate_session(email)
+    return m
 
 
 def invalidate_session(email: str) -> None:
@@ -150,16 +159,14 @@ def list_files(m: Any, account_email: str, folder_id: str = "root"):  # type: ig
                 {  # type: ignore[union-attr]
                     "id": f"{account_email}:{file_id}",
                     "name": file_data.get("a", {}).get("n", "unknown"),
-                    "type": (
-                        "folder" if file_data.get("t") == 1 else "file"
-                    ),
+                    "type": ("folder" if file_data.get("t") == 1 else "file"),
                     "size": file_data.get("s", 0),
                     "provider": "mega",
                 }
             )
         return result  # type: ignore[return-value]
-    except Exception as e:
-        print(f"MEGA API error: {e}")
+    except Exception:
+        logger.exception("MEGA API error")
         return []  # type: ignore[return-value]
 
 
@@ -170,10 +177,10 @@ def get_storage_info(m: Any) -> dict[str, Any]:
         # Try get_storage_space first which usually returns a dict with 'used' and 'total' in bytes
         try:
             quota = m.get_storage_space()
-            print(f"DEBUG: MEGA storage_space response: {quota}")
+            logger.debug("MEGA storage_space response: %s", quota)
         except Exception:
             quota = m.get_quota()
-            print(f"DEBUG: MEGA quota response: {quota}")
+            logger.debug("MEGA quota response: %s", quota)
 
         # Handle dictionary response (standard for get_storage_space)
         if isinstance(quota, dict):
@@ -196,6 +203,6 @@ def get_storage_info(m: Any) -> dict[str, Any]:
             "storage_used": int(used),
             "storage_total": int(total),
         }
-    except Exception as e:
-        print(f"MEGA storage info error: {e}")
+    except Exception:
+        logger.exception("MEGA storage info error")
         return {"storage_used": 0, "storage_total": 0}

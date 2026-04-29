@@ -11,8 +11,10 @@ Boundaries:
 """
 
 import asyncio
+import logging
 import os
-from fastapi import APIRouter, Depends, HTTPException, Request
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from google_auth_oauthlib.flow import Flow  # type: ignore[import]
 from sqlalchemy.exc import IntegrityError
@@ -31,7 +33,10 @@ from app.db.schemas import (
 from app.db.session import get_db
 from app.services import file_cache
 from app.services.gdrive_service import get_account_info as get_gdrive_info
-from app.services.mega_service import get_mega_session, get_storage_info as get_mega_info
+from app.services.mega_service import get_mega_session
+from app.services.mega_service import get_storage_info as get_mega_info
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -65,8 +70,8 @@ async def get_accounts(
                 else:
                     acc.is_active = False
             db.commit()
-        except Exception as e:
-            print(f"Error refreshing account status for {acc.email}: {e}")
+        except Exception:
+            logger.exception("Error refreshing account status for %s", acc.email)
             acc.is_active = False
             db.commit()
 
@@ -92,11 +97,15 @@ async def add_account(
         info = await asyncio.to_thread(get_mega_info, m)
 
         # Check if already exists
-        existing = db.query(models.Account).filter(
-            models.Account.user_id == user.id,
-            models.Account.email == request.email,
-            models.Account.provider == "mega"
-        ).first()
+        existing = (
+            db.query(models.Account)
+            .filter(
+                models.Account.user_id == user.id,
+                models.Account.email == request.email,
+                models.Account.provider == "mega",
+            )
+            .first()
+        )
 
         if existing:
             existing.access_token = request.email
@@ -110,10 +119,10 @@ async def add_account(
                 email=request.email,
                 provider="mega",
                 access_token=request.email,  # Storing email as access_token for MEGA
-                refresh_token=request.password, # Storing password as refresh_token for MEGA
+                refresh_token=request.password,  # Storing password as refresh_token for MEGA
                 storage_used=info["storage_used"],
                 storage_total=info["storage_total"],
-                is_active=True
+                is_active=True,
             )
             db.add(account)
 
@@ -124,6 +133,22 @@ async def add_account(
     raise HTTPException(status_code=400, detail="Unsupported provider for this endpoint")
 
 
+@router.post("/sync", response_model=SuccessMessageResponse)
+async def sync_thumbnails(
+    background_tasks: BackgroundTasks,
+    user: models.User = Depends(get_current_user),
+):
+    """Trigger background thumbnail generation for all files in user accounts."""
+
+    # Import here to avoid circular imports during startup
+    from app.services.background_service import sync_thumbnails as bg_sync
+
+    user_id = int(user.id)  # type: ignore[arg-type]
+    background_tasks.add_task(bg_sync, user_id)
+
+    return {"message": "Thumbnail sync job started in the background"}
+
+
 @router.delete("/{account_id}", response_model=SuccessStatusResponse)
 def disconnect_account(
     account_id: int,
@@ -132,10 +157,11 @@ def disconnect_account(
 ):
     """Disconnect and remove a linked cloud account."""
 
-    account = db.query(models.Account).filter(
-        models.Account.id == account_id,
-        models.Account.user_id == user.id
-    ).first()
+    account = (
+        db.query(models.Account)
+        .filter(models.Account.id == account_id, models.Account.user_id == user.id)
+        .first()
+    )
 
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
@@ -149,8 +175,7 @@ def disconnect_account(
 
 @router.get("/google/login", response_model=AuthUrlResponse)
 def google_login(
-    request: Request,
-    _user: models.User = Depends(get_current_user)
+    request: Request, _user: models.User = Depends(get_current_user)
 ) -> AuthUrlResponse:
     """Initiate the Google OAuth2 authorization flow."""
 
@@ -177,9 +202,7 @@ def google_login(
     token = auth_header.split(" ")[1] if auth_header and " " in auth_header else ""
 
     auth_url, _ = flow.authorization_url(  # type: ignore[no-untyped-call]
-        access_type="offline",
-        prompt="consent",
-        state=token
+        access_type="offline", prompt="consent", state=token
     )
 
     return AuthUrlResponse(auth_url=auth_url)  # type: ignore[return-value]
@@ -223,8 +246,7 @@ async def google_callback(
 
     # Create temporary account object to fetch info
     temp_acc = models.Account(
-        access_token=credentials.token,
-        refresh_token=credentials.refresh_token
+        access_token=credentials.token, refresh_token=credentials.refresh_token
     )
 
     info = await asyncio.to_thread(get_gdrive_info, temp_acc, db)
@@ -232,15 +254,15 @@ async def google_callback(
         raise HTTPException(status_code=500, detail="Failed to fetch Google account info")
 
     # Match by provider and email to find existing linked account.
-    existing = db.query(models.Account).filter(
-        models.Account.email == info["email"],
-        models.Account.provider == "gdrive"
-    ).first()
+    existing = (
+        db.query(models.Account)
+        .filter(models.Account.email == info["email"], models.Account.provider == "gdrive")
+        .first()
+    )
 
     if existing and existing.user_id != user.id:
         raise HTTPException(
-            status_code=409,
-            detail="This Google account is already linked to another user"
+            status_code=409, detail="This Google account is already linked to another user"
         )
 
     if existing:
@@ -259,7 +281,7 @@ async def google_callback(
             refresh_token=credentials.refresh_token,
             storage_used=info["storage_used"],
             storage_total=info["storage_total"],
-            is_active=True
+            is_active=True,
         )
         db.add(account)
 
@@ -268,24 +290,30 @@ async def google_callback(
     except IntegrityError as e:
         db.rollback()
         # Race-safe retry path if another request inserted the same account.
-        print(f"Race condition detected during account link for {info['email']}: {e}")
-        existing = db.query(models.Account).filter(
-            models.Account.email == info["email"],
-            models.Account.provider == "gdrive"
-        ).first()
+        logger.error(
+            "Race condition detected during account link for %s: %s",
+            info["email"],
+            e,
+        )
+        existing = (
+            db.query(models.Account)
+            .filter(models.Account.email == info["email"], models.Account.provider == "gdrive")
+            .first()
+        )
 
         if not existing:
             # If still not found, it might be a different integrity issue
-            print(f"Failed to find existing account after IntegrityError for {info['email']}")
+            logger.error(
+                "Failed to find existing account after IntegrityError for %s",
+                info["email"],
+            )
             raise HTTPException(
-                status_code=500,
-                detail="Database integrity error during account linking"
+                status_code=500, detail="Database integrity error during account linking"
             ) from e
 
         if existing.user_id != user.id:
             raise HTTPException(
-                status_code=409,
-                detail="This Google account is already linked to another user"
+                status_code=409, detail="This Google account is already linked to another user"
             ) from e
 
         existing.access_token = credentials.token
@@ -298,10 +326,9 @@ async def google_callback(
             db.commit()
         except Exception as commit_err:
             db.rollback()
-            print(f"Final commit failed during account link retry: {commit_err}")
+            logger.error("Final commit failed during account link retry: %s", commit_err)
             raise HTTPException(
-                status_code=500,
-                detail="Failed to persist account updates"
+                status_code=500, detail="Failed to persist account updates"
             ) from commit_err
 
     file_cache.invalidate_all(user.id)

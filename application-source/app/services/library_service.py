@@ -12,6 +12,7 @@ Boundaries:
 
 import asyncio
 import json
+import logging
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -22,10 +23,10 @@ from app.services.mega_service import get_mega_session, invalidate_session
 from app.services.mega_service import list_files as mega_list  # type: ignore[import]
 from app.utils.folder_merger import merge_files  # type: ignore[import]
 
+logger = logging.getLogger(__name__)
 
-async def list_all_files(
-    db: Session, accounts: list[Any], folder_id: str
-) -> list[dict[str, Any]]:
+
+async def list_all_files(db: Session, accounts: list[Any], folder_id: str) -> list[dict[str, Any]]:
     """Fetch and merge file lists from all provided accounts for a given folder in parallel."""
 
     # Resolve folder mapping if it's a JSON string
@@ -65,43 +66,44 @@ async def list_all_files(
                 return []
             target_id = actual_id
 
-        print(f"Fetching files for account {acc.email} ({acc.provider}) in folder {target_id}...")
+        logger.info(
+            "Fetching files for account %s (%s) in folder %s...",
+            acc.email,
+            acc.provider,
+            target_id,
+        )
 
         try:
             if acc.provider == "gdrive":
                 res = await asyncio.to_thread(gdrive_list, acc, db, target_id)
-                print(f"GDrive account {acc.email} returned {len(res)} files")
+                logger.info("GDrive account %s returned %d files", acc.email, len(res))
                 return res
             elif acc.provider == "mega":
-                m = await asyncio.to_thread(
-                    get_mega_session, acc.access_token, acc.refresh_token
-                )
+                m = await asyncio.to_thread(get_mega_session, acc.access_token, acc.refresh_token)
                 if m:
                     res = await asyncio.to_thread(mega_list, m, acc.email, target_id)
-                    print(f"MEGA account {acc.email} returned {len(res)} files")
+                    logger.info("MEGA account %s returned %d files", acc.email, len(res))
                     return res
                 else:
-                    print(f"Failed to get MEGA session for {acc.email}")
+                    logger.error("Failed to get MEGA session for %s", acc.email)
             return []
         except Exception as e:
-            print(f"Error listing files for {acc.provider} ({acc.email}): {e}")
+            logger.error("Error listing files for %s (%s): %s", acc.provider, acc.email, e)
             if acc.provider == "mega":
                 await asyncio.to_thread(invalidate_session, acc.access_token)
             return []
 
     # Run all account fetches in parallel
-    print(f"Starting parallel fetch for {len(accounts)} accounts")
+    logger.info("Starting parallel fetch for %d accounts", len(accounts))
     results = await asyncio.gather(*(fetch_account_files(acc) for acc in accounts))
 
     # Filter out empty lists and merge
     all_file_lists = [f for f in results if f]
-    print(f"Merging {len(all_file_lists)} non-empty file lists")
+    logger.info("Merging %d non-empty file lists", len(all_file_lists))
     return merge_files(all_file_lists)  # type: ignore[arg-type,return-value]
 
 
-def inject_metadata(
-    db: Session, user_id: int, files: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
+def inject_metadata(db: Session, user_id: int, files: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Augment file items with persisted metadata and user watch history."""
 
     all_ids = []
@@ -121,9 +123,7 @@ def inject_metadata(
     history_map = {}
     if user_id >= 0:
         history_records = (
-            db.query(models.WatchHistory)
-            .filter(models.WatchHistory.user_id == user_id)
-            .all()
+            db.query(models.WatchHistory).filter(models.WatchHistory.user_id == user_id).all()
         )
         history_map = {h.file_id: h for h in history_records}
 
@@ -146,6 +146,7 @@ def inject_metadata(
                     f["duration"] = m.duration
                     f["width"] = m.width
                     f["height"] = m.height
+                    f["updated_at"] = m.updated_at
 
                 if file_id in history_map:
                     record = history_map[file_id]
@@ -161,9 +162,7 @@ def inject_metadata(
     return files
 
 
-def get_cached_folder(
-    db: Session, user_id: int, folder_id: str
-) -> list[dict[str, Any]] | None:
+def get_cached_folder(db: Session, user_id: int, folder_id: str) -> list[dict[str, Any]] | None:
     """Retrieve folder listing from database cache."""
 
     cache = (

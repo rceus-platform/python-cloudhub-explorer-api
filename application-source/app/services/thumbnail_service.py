@@ -44,8 +44,7 @@ def process_image_thumbnail(
     resp = requests.get(stream_url, headers=headers, timeout=30)
     if resp.status_code >= 400:
         logger.error(
-            "Thumbnail request to %s failed with %d: %s",
-            stream_url, resp.status_code, resp.text
+            "Thumbnail request to %s failed with %d: %s", stream_url, resp.status_code, resp.text
         )
     resp.raise_for_status()
 
@@ -56,9 +55,7 @@ def process_image_thumbnail(
     if orig_width > 800:
         new_width = 800
         new_height = int(orig_height * (800 / orig_width))
-        img = img.resize(
-            (new_width, new_height), Image.Resampling.LANCZOS
-        )  # type: ignore[return-value]
+        img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)  # type: ignore[return-value]
 
     img.convert("RGB").save(cache_path, "JPEG", quality=75, optimize=True)
     return img.size
@@ -89,9 +86,7 @@ def extract_video_frame(
 
         try:
             probe = ffmpeg.probe(stream_url, **probe_args)  # type: ignore[no-untyped-call]
-            video_stream = next(
-                (s for s in probe["streams"] if s["codec_type"] == "video"), None
-            )
+            video_stream = next((s for s in probe["streams"] if s["codec_type"] == "video"), None)
             duration = float(probe["format"]["duration"])
             width = int(video_stream["width"]) if video_stream else None
             height = int(video_stream["height"]) if video_stream else None
@@ -125,11 +120,7 @@ def save_metadata(
 ):
     """Update or create file metadata in the database."""
 
-    metadata = (
-        db.query(models.FileMetadata)
-        .filter(models.FileMetadata.file_id == file_id)
-        .first()
-    )
+    metadata = db.query(models.FileMetadata).filter(models.FileMetadata.file_id == file_id).first()
     if not metadata:
         metadata = models.FileMetadata(file_id=file_id, provider=provider)
         db.add(metadata)

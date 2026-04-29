@@ -1,6 +1,5 @@
 """Tests for the files routes."""
 
-
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -47,9 +46,9 @@ def test_list_files_authenticated(mock_library_service):
     """Test listing files from a library with authentication."""
 
     # Mock library service calls
-    mock_library_service.list_all_files = AsyncMock(return_value=[
-        {"id": "file1", "name": "movie.mp4", "provider": "gdrive"}
-    ])
+    mock_library_service.list_all_files = AsyncMock(
+        return_value=[{"id": "file1", "name": "movie.mp4", "provider": "gdrive"}]
+    )
     mock_library_service.inject_metadata.return_value = [
         {"id": "file1", "name": "movie.mp4", "provider": "gdrive", "thumbnail": None}
     ]

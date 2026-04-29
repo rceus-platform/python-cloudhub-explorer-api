@@ -1,4 +1,5 @@
 """Tests for the MEGA cloud storage service."""
+
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -99,7 +100,7 @@ def test_list_files_mapping():
     # In list_files, it looks for t=2 for root handle
     mock_session.get_files.return_value["root_handle"] = {"t": 2}
 
-    files = list_files(mock_session, folder_id="root")
+    files = list_files(mock_session, "test@example.com", folder_id="root")
 
     assert len(files) == 2
     assert files[0]["name"] == "video.mp4"

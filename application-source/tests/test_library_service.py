@@ -14,7 +14,7 @@ def test_merge_files_duplicates():
 
     file_lists = [
         [{"name": "video.mp4", "type": "file", "provider": "gdrive", "id": "g1"}],
-        [{"name": "video.mp4", "type": "file", "provider": "mega", "id": "m1"}]
+        [{"name": "video.mp4", "type": "file", "provider": "mega", "id": "m1"}],
     ]
 
     result = merge_files(file_lists)
@@ -25,12 +25,13 @@ def test_merge_files_duplicates():
     assert result[0]["ids"]["gdrive"] == "g1"
     assert result[0]["ids"]["mega"] == "m1"
 
+
 def test_merge_files_unique():
     """Ensure unique files are preserved independently."""
 
     file_lists = [
         [{"name": "a.mp4", "type": "file", "provider": "gdrive", "id": "g1"}],
-        [{"name": "b.mp4", "type": "file", "provider": "gdrive", "id": "g2"}]
+        [{"name": "b.mp4", "type": "file", "provider": "gdrive", "id": "g2"}],
     ]
 
     result = merge_files(file_lists)
@@ -39,12 +40,13 @@ def test_merge_files_unique():
     assert "a.mp4" in names
     assert "b.mp4" in names
 
+
 def test_merge_files_different_types():
     """Ensure folder and file with same name are not merged."""
 
     file_lists = [
         [{"name": "shared", "type": "folder", "provider": "gdrive", "id": "g1"}],
-        [{"name": "shared", "type": "file", "provider": "gdrive", "id": "g2"}]
+        [{"name": "shared", "type": "file", "provider": "gdrive", "id": "g2"}],
     ]
 
     result = merge_files(file_lists)
