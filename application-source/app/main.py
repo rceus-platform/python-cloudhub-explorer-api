@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import accounts, auth, files, video
 from app.core.config import settings
@@ -71,6 +72,9 @@ app.include_router(auth.router, prefix="/auth", tags=["Auth"])
 app.include_router(accounts.router, prefix="/accounts", tags=["Accounts"])
 app.include_router(files.router, prefix="/files", tags=["Files"])
 app.include_router(video.router, prefix="/video", tags=["Video"])
+
+# Serve static assets (placeholders, etc.)
+app.mount("/assets", StaticFiles(directory="assets"), name="assets")
 
 # Development-only auth bypass
 if settings.DEBUG:

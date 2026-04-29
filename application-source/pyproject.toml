@@ -22,6 +22,7 @@ dependencies = [
     "python-multipart",
     "requests",
     "ffmpeg-python",
+    "tenacity>=8.3.0",
 ]
 
 [project.optional-dependencies]
@@ -36,11 +37,13 @@ packages = ["app"]
 
 [tool.uv]
 managed = true
+override-dependencies = [
+    "tenacity>=8.3.0",
+]
 
 [tool.pylint."MESSAGES CONTROL"]
 disable = [
     "import-outside-toplevel",
-    "unused-import",
     "no-member",
     "invalid-name",
     "self-assigning-variable",

@@ -44,7 +44,8 @@ def _load_session(email: str):
     try:
         with open(path, "rb") as f:
             m = pickle.load(f)
-        m.get_quota()  # Lightweight validation call
+        # Lightweight validation call
+        m.get_quota()
         return m
     except Exception:
         try:
@@ -88,8 +89,8 @@ def login_to_mega(email: str, password: str):
         _save_session(email, m)
         _MEGA_SESSIONS[email] = m
         return m
-    except Exception as e:
-        logger.error("MEGA login failed for %s: %s", email, e)
+    except Exception:
+        logger.exception("MEGA login failed for %s", email)
         return None
 
 

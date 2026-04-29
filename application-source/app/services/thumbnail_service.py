@@ -43,7 +43,7 @@ def process_image_thumbnail(
 
     resp = requests.get(stream_url, headers=headers, timeout=30)
     if resp.status_code >= 400:
-        logger.error(
+        logger.warning(
             "Thumbnail request to %s failed with %d: %s", stream_url, resp.status_code, resp.text
         )
     resp.raise_for_status()
@@ -90,8 +90,8 @@ def extract_video_frame(
             duration = float(probe["format"]["duration"])
             width = int(video_stream["width"]) if video_stream else None
             height = int(video_stream["height"]) if video_stream else None
-        except Exception as e:
-            logger.error("ffprobe failed: %s", e)
+        except Exception:
+            logger.exception("ffprobe failed")
 
     # Frame extraction
     (

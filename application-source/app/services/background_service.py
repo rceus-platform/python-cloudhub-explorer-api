@@ -28,6 +28,7 @@ class ThumbnailSyncManager:
     @classmethod
     async def sync_thumbnails(cls, user_id: int) -> None:
         """Background worker that iterates through all files and generates thumbnails."""
+
         if cls._is_running:
             logger.info("Thumbnail sync already running, skipping.")
             return
@@ -66,8 +67,8 @@ class ThumbnailSyncManager:
                         files = await library_service.list_all_files(
                             db, target_accounts, current_folder_id
                         )
-                except Exception as e:
-                    logger.error("Error fetching files for folder %s: %s", current_folder_id, e)
+                except Exception:
+                    logger.exception("Error fetching files for folder %s", current_folder_id)
                     continue
 
                 for file_info in files:
@@ -81,8 +82,8 @@ class ThumbnailSyncManager:
                     elif file_info["type"] == "file":
                         await cls._process_file_thumbnail(user_id, file_info)
 
-        except Exception as e:
-            logger.error("Thumbnail sync failed: %s", e)
+        except Exception:
+            logger.exception("Thumbnail sync failed")
         finally:
             cls._is_running = False
             logger.info("Thumbnail sync completed.")
@@ -90,6 +91,7 @@ class ThumbnailSyncManager:
     @classmethod
     async def _process_file_thumbnail(cls, user_id: int, file_info: dict) -> None:
         """Check if a file needs a thumbnail and generate it if necessary."""
+
         file_name = file_info.get("name", "")
         media_type = get_media_type(file_name)
 
@@ -188,8 +190,8 @@ class ThumbnailSyncManager:
             # Rate limit: 10 seconds delay between files to prevent OOM / MEGA blocks
             await asyncio.sleep(10)
 
-        except Exception as e:
-            logger.error("Failed to generate thumbnail for %s: %s", file_name, e)
+        except Exception:
+            logger.exception("Failed to generate thumbnail for %s", file_name)
             # Add a delay even on failure to avoid rapid error loops
             await asyncio.sleep(10)
 

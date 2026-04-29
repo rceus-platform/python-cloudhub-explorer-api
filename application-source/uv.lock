@@ -6,6 +6,9 @@ resolution-markers = [
     "python_full_version < '3.13'",
 ]
 
+[manifest]
+overrides = [{ name = "tenacity", specifier = ">=8.3.0" }]
+
 [[package]]
 name = "annotated-types"
 version = "0.7.0"
@@ -1066,6 +1069,7 @@ dependencies = [
     { name = "python-multipart" },
     { name = "requests" },
     { name = "sqlalchemy" },
+    { name = "tenacity" },
     { name = "uvicorn" },
 ]
 
@@ -1096,6 +1100,7 @@ requires-dist = [
     { name = "python-multipart" },
     { name = "requests" },
     { name = "sqlalchemy", specifier = "==2.0.44" },
+    { name = "tenacity", specifier = ">=8.3.0" },
     { name = "uvicorn", specifier = "==0.35.0" },
 ]
 provides-extras = ["dev"]
@@ -1246,14 +1251,11 @@ wheels = [
 
 [[package]]
 name = "tenacity"
-version = "5.1.5"
+version = "9.1.4"
 source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "six" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/2d/7a/b5494aa3940974d92de47f7b57384a0eb8b56142ea47f82028c661359c6f/tenacity-5.1.5.tar.gz", hash = "sha256:e664bd94f088b17f46da33255ae33911ca6a0fe04b156d334b601a4ef66d3c5f", size = 31364, upload-time = "2019-10-30T12:57:00.236Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/47/c6/ee486fd809e357697ee8a44d3d69222b344920433d3b6666ccd9b374630c/tenacity-9.1.4.tar.gz", hash = "sha256:adb31d4c263f2bd041081ab33b498309a57c77f9acf2db65aadf0898179cf93a", size = 49413, upload-time = "2026-02-07T10:45:33.841Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/45/67/67bb1db087678bc5c6f20766cf18914dfe37b0b9d4e4c5bb87408460b75f/tenacity-5.1.5-py2.py3-none-any.whl", hash = "sha256:3a916e734559f1baa2cab965ee00061540c41db71c3bf25375b81540a19758fc", size = 34922, upload-time = "2019-10-30T12:57:02.559Z" },
+    { url = "https://files.pythonhosted.org/packages/d7/c1/eb8f9debc45d3b7918a32ab756658a0904732f75e555402972246b0b8e71/tenacity-9.1.4-py3-none-any.whl", hash = "sha256:6095a360c919085f28c6527de529e76a06ad89b23659fa881ae0649b867a9d55", size = 28926, upload-time = "2026-02-07T10:45:32.24Z" },
 ]
 
 [[package]]

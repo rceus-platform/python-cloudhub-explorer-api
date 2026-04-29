@@ -85,10 +85,10 @@ async def list_all_files(db: Session, accounts: list[Any], folder_id: str) -> li
                     logger.info("MEGA account %s returned %d files", acc.email, len(res))
                     return res
                 else:
-                    logger.error("Failed to get MEGA session for %s", acc.email)
+                    logger.warning("Failed to get MEGA session for %s", acc.email)
             return []
-        except Exception as e:
-            logger.error("Error listing files for %s (%s): %s", acc.provider, acc.email, e)
+        except Exception:
+            logger.exception("Error listing files for %s (%s)", acc.provider, acc.email)
             if acc.provider == "mega":
                 await asyncio.to_thread(invalidate_session, acc.access_token)
             return []

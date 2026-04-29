@@ -41,7 +41,10 @@ thumbnail_semaphore = threading.Semaphore(2)
 
 
 def _resolve_account(
-    db: Session, user_id: int, provider: str, file_id: str
+    db: Session,
+    user_id: int,
+    provider: str,
+    file_id: str,
 ) -> tuple[models.Account | None, str]:
     """Extract account email from file_id and resolve the account credentials."""
 
@@ -247,9 +250,10 @@ def get_thumbnail(
             )
 
         return FileResponse(cache_path)
-    except Exception as exc:
-        logger.exception("Thumbnail extraction failed")
-        raise HTTPException(status_code=404, detail="Thumbnail not found") from exc
+    except Exception:
+        logger.exception("Thumbnail extraction failed, returning placeholder")
+        placeholder = "placeholder-image.png" if is_image else "placeholder-video.png"
+        return FileResponse(os.path.join("assets", placeholder))
 
 
 @router.patch("/{file_id}/thumbnail", response_model=ThumbnailUpdateResponse)
