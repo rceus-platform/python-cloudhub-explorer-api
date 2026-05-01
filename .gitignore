@@ -129,8 +129,7 @@ ehthumbs.db
 Thumbs.db
 
 # App Specific
-cloudhub.db
-
-# Uncomment these if you want to ignore VS Code settings/folders
+cloudhub.db*
+cache/
 # .vscode/
 # .github/ (Only uncomment if you want to ignore CI/CD workflows/instructions)

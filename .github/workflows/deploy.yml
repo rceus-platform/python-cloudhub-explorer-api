@@ -28,7 +28,8 @@ jobs:
             cd $APP_DIR
 
             echo "🧹 Cleaning untracked files"
-            git clean -fd
+            # Exclude database files to prevent race conditions with running app
+            git clean -fd -e "cloudhub.db*" -e "application-source/cloudhub.db*" || true
             git stash
 
             echo "📥 Pulling code"
