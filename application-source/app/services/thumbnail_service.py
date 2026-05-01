@@ -16,7 +16,7 @@ import os
 import time
 
 import ffmpeg  # type: ignore[import]
-import requests
+import httpx
 from PIL import Image, ImageOps
 from sqlalchemy.orm import Session
 
@@ -36,17 +36,21 @@ def get_cache_path(file_id: str, timestamp: int | None = None) -> str:
     return os.path.join(cache_dir, f"{file_id}.jpg")
 
 
-def process_image_thumbnail(
+async def process_image_thumbnail(
     stream_url: str, headers: dict[str, str], cache_path: str
 ) -> tuple[int, int]:
     """Download, rotate, and resize an image for use as a thumbnail."""
 
-    resp = requests.get(stream_url, headers=headers, timeout=30)
-    if resp.status_code >= 400:
-        logger.warning(
-            "Thumbnail request to %s failed with %d: %s", stream_url, resp.status_code, resp.text
-        )
-    resp.raise_for_status()
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(stream_url, headers=headers)
+        if resp.status_code >= 400:
+            logger.warning(
+                "Thumbnail request to %s failed with %d: %s",
+                stream_url,
+                resp.status_code,
+                resp.text,
+            )
+        resp.raise_for_status()
 
     img = Image.open(io.BytesIO(resp.content))
     img = ImageOps.exif_transpose(img)
@@ -57,7 +61,9 @@ def process_image_thumbnail(
         new_height = int(orig_height * (800 / orig_width))
         img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)  # type: ignore[return-value]
 
-    img.convert("RGB").save(cache_path, "JPEG", quality=75, optimize=True)
+    img.convert("RGB").save(
+        cache_path, "JPEG", quality=75, optimize=True
+    )
     return img.size
 
 

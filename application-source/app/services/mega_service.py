@@ -4,6 +4,7 @@ import hashlib
 import logging
 import os
 import pickle
+import threading
 import time
 from typing import Any
 
@@ -16,6 +17,7 @@ logger = logging.getLogger(__name__)
 # Throttling and session configuration
 MIN_LOGIN_INTERVAL: int = 60
 _MEGA_SESSIONS: dict[str, Any] = {}
+_MEGA_LOCKS: dict[str, threading.Lock] = {}
 _last_login_attempt: dict[str, float] = {}
 
 
@@ -120,6 +122,7 @@ def invalidate_session(email: str) -> None:
     """Clean up broken or expired sessions from all cache layers."""
 
     _MEGA_SESSIONS.pop(email, None)
+    _MEGA_LOCKS.pop(email, None)
     path = _session_file(email)
     if os.path.exists(path):
         try:
@@ -128,11 +131,20 @@ def invalidate_session(email: str) -> None:
             pass
 
 
+def _get_lock(email: str) -> threading.Lock:
+    """Get or create a thread lock for a specific account email."""
+    if email not in _MEGA_LOCKS:
+        _MEGA_LOCKS[email] = threading.Lock()
+    return _MEGA_LOCKS[email]
+
+
 def list_files(m: Any, account_email: str, folder_id: str = "root"):  # type: ignore[no-untyped-def]
     """List nodes from MEGA, filtering for the specified folder scope."""
 
+    lock = _get_lock(account_email)
     try:
-        files = m.get_files()  # type: ignore[union-attr]
+        with lock:
+            files = m.get_files()  # type: ignore[union-attr]
         if not files:
             return []  # type: ignore[return-value]
 
@@ -174,13 +186,16 @@ def list_files(m: Any, account_email: str, folder_id: str = "root"):  # type: ig
 def get_storage_info(m: Any) -> dict[str, Any]:
     """Retrieve storage quota for a MEGA account."""
 
+    lock = _MEGA_LOCKS.get(m.email) if hasattr(m, 'email') else threading.Lock()
     try:
         # Try get_storage_space first which usually returns a dict with 'used' and 'total' in bytes
         try:
-            quota = m.get_storage_space()
+            with lock:
+                quota = m.get_storage_space()
             logger.debug("MEGA storage_space response: %s", quota)
         except Exception:
-            quota = m.get_quota()
+            with lock:
+                quota = m.get_quota()
             logger.debug("MEGA quota response: %s", quota)
 
         # Handle dictionary response (standard for get_storage_space)

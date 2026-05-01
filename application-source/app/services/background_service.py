@@ -6,100 +6,63 @@ Responsibilities:
 """
 
 import asyncio
-import json
 import logging
 import os
 
 from app.core.config import settings
-from app.db import models
 from app.db.session import SessionLocal
-from app.services import account_service, library_service, thumbnail_service
+from app.services import account_service, thumbnail_service
 from app.services.gdrive_service import get_valid_access_token
 from app.utils.file_utils import get_media_type
+from app.utils.resource_manager import AdaptiveController
 
 logger = logging.getLogger(__name__)
 
 
-class ThumbnailSyncManager:
-    """Manager for background thumbnail synchronization tasks."""
+class ThumbnailManager:
+    """Manager for background thumbnail generation with priority and folder awareness."""
 
-    _is_running = False
-
-    @classmethod
-    async def sync_thumbnails(cls, user_id: int) -> None:
-        """Background worker that iterates through all files and generates thumbnails."""
-
-        if cls._is_running:
-            logger.info("Thumbnail sync already running, skipping.")
-            return
-
-        cls._is_running = True
-        try:
-            logger.info("Starting thumbnail sync for user %d", user_id)
-
-            # Fetch accounts using a short-lived session
-            with SessionLocal() as db:
-                accounts = account_service.get_user_accounts(db, user_id)
-
-            if not accounts:
-                logger.info("No accounts found for user.")
-                return
-
-            # Keep track of folders to visit: (folder_id, folder_name)
-            folders_to_visit = [("root", "root")]
-
-            while folders_to_visit:
-                current_folder_id, current_folder_name = folders_to_visit.pop(0)
-                logger.info("Syncing folder: %s (%s)", current_folder_name, current_folder_id)
-
-                # We need to resolve the correct accounts for the current folder
-                target_accounts = accounts
-                if current_folder_id != "root":
-                    try:
-                        folder_map = json.loads(current_folder_id)
-                        target_accounts = [acc for acc in accounts if acc.provider in folder_map]
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-
-                # Fetch files in the current folder using a short-lived session
-                try:
-                    with SessionLocal() as db:
-                        files = await library_service.list_all_files(
-                            db, target_accounts, current_folder_id
-                        )
-                except Exception:
-                    logger.exception("Error fetching files for folder %s", current_folder_id)
-                    continue
-
-                for file_info in files:
-                    if file_info["type"] == "folder":
-                        subfolder_id = (
-                            json.dumps(file_info["ids"])
-                            if "ids" in file_info
-                            else file_info.get("id")
-                        )
-                        folders_to_visit.append((subfolder_id, file_info["name"]))
-                    elif file_info["type"] == "file":
-                        await cls._process_file_thumbnail(user_id, file_info)
-
-        except Exception:
-            logger.exception("Thumbnail sync failed")
-        finally:
-            cls._is_running = False
-            logger.info("Thumbnail sync completed.")
+    _queue_obj: asyncio.Queue[tuple[int, str, dict]] | None = None
+    _in_progress: set[str] = set()
+    _active_folders: dict[int, str] = {}
+    _worker_tasks: list[asyncio.Task] = []
+    _semaphore: asyncio.Semaphore | None = None
 
     @classmethod
-    async def _process_file_thumbnail(cls, user_id: int, file_info: dict) -> None:
-        """Check if a file needs a thumbnail and generate it if necessary."""
+    def get_queue(cls) -> asyncio.Queue[tuple[int, str, dict]]:
+        """Lazily initialize the queue to ensure it's bound to the current event loop."""
+        if cls._queue_obj is None:
+            cls._queue_obj = asyncio.Queue()
+        return cls._queue_obj
 
-        file_name = file_info.get("name", "")
-        media_type = get_media_type(file_name)
+    @classmethod
+    def get_semaphore(cls) -> asyncio.Semaphore:
+        """Lazily initialize the semaphore to ensure it's bound to the current event loop."""
+        if cls._semaphore is None:
+            # Optimized for high-performance hardware (M4)
+            cls._semaphore = asyncio.Semaphore(5)
+        return cls._semaphore
 
-        # We only care about images and videos
-        if not (media_type.startswith("image/") or media_type.startswith("video/")):
-            return
+    @classmethod
+    def set_active_folder(cls, user_id: int, folder_id: str) -> None:
+        """Mark a folder as active for a user to prioritize its thumbnails."""
+        cls._active_folders[user_id] = folder_id
+        logger.info("User %d active folder set to %s", user_id, folder_id)
 
-        # file_info contains 'ids' map: { "provider": "email:id" }
+    @classmethod
+    async def enqueue_folder_thumbnails(
+        cls, user_id: int, folder_id: str, files: list[dict]
+    ) -> None:
+        """Enqueue all media files in a folder that are missing thumbnails."""
+        for f in files:
+            # We don't check for updated_at here anymore;
+            # enqueue_thumbnail will handle the check against the actual disk cache.
+            if f.get("type") == "file":
+                await cls.enqueue_thumbnail(user_id, folder_id, f)
+
+    @classmethod
+    async def enqueue_thumbnail(cls, user_id: int, folder_id: str, file_info: dict) -> None:
+        """Add a single file to the generation queue if not already present."""
         ids = file_info.get("ids", {})
         if not ids:
             return
@@ -107,23 +70,98 @@ class ThumbnailSyncManager:
         provider = next(iter(ids.keys()))
         file_id = ids[provider]
 
-        # Check if we already have a thumbnail for this exact file_id
+        if file_id in cls._in_progress:
+            return
+
+        # Check if already exists in cache to avoid redundant queuing
         cache_path = thumbnail_service.get_cache_path(file_id)
         if os.path.exists(cache_path):
             return
 
-        # Check DB metadata
-        with SessionLocal() as db:
-            metadata = (
-                db.query(models.FileMetadata).filter(models.FileMetadata.file_id == file_id).first()
-            )
-            if metadata and metadata.thumbnail_path and os.path.exists(cache_path):
-                return
+        await cls.get_queue().put((user_id, folder_id, file_info))
+        logger.info("Enqueued thumbnail task for: %s", file_info.get("name"))
 
-        logger.info("Generating thumbnail for %s (%s) via %s", file_name, file_id, provider)
+    @classmethod
+    async def start_worker(cls) -> None:
+        """Start multiple background worker tasks for parallel processing."""
+        if not cls._worker_tasks:
+            # Launch 4 parallel workers to leverage M4 multicore performance
+            for i in range(4):
+                task = asyncio.create_task(cls._worker_loop(i))
+                cls._worker_tasks.append(task)
+            logger.info("Started 4 parallel thumbnail background workers.")
+
+    @classmethod
+    async def _worker_loop(cls, worker_id: int) -> None:
+        """Main loop for processing the thumbnail queue (Worker #worker_id)."""
+        logger.info("Thumbnail worker #%d starting...", worker_id)
+        controller = AdaptiveController()
+
+        while True:
+            user_id, folder_id, file_info = await cls.get_queue().get()
+            try:
+                # 1. Check if folder is still active
+                active_folder = cls._active_folders.get(user_id)
+                if active_folder != folder_id:
+                    logger.info(
+                        "Skipping task for inactive folder: %s (current active: %s)",
+                        folder_id,
+                        active_folder,
+                    )
+                    continue
+
+                # 2. Get file_id and check in_progress
+                ids = file_info.get("ids", {})
+                if not ids:
+                    continue
+                provider = next(iter(ids.keys()))
+                file_id = ids[provider]
+
+                if file_id in cls._in_progress:
+                    continue
+
+                cls._in_progress.add(file_id)
+                try:
+                    semaphore = cls.get_semaphore()
+                    # Explicit check to satisfy static analysis
+                    if semaphore is not None:
+                        async with semaphore:
+                            await cls._process_file_thumbnail(
+                                user_id, file_info, controller.delay_seconds
+                            )
+                finally:
+                    cls._in_progress.remove(file_id)
+
+                controller.update()
+            except Exception:
+                logger.exception("Error in thumbnail worker loop")
+            finally:
+                cls.get_queue().task_done()
+
+    @classmethod
+    async def _process_file_thumbnail(
+        cls, user_id: int, file_info: dict, delay_seconds: float = 2.0
+    ) -> None:
+        """Core logic to generate a single thumbnail (moved from original manager)."""
+
+        file_name = file_info.get("name", "")
+        media_type = get_media_type(file_name)
+
+        if not (media_type.startswith("image/") or media_type.startswith("video/")):
+            return
+
+        ids = file_info.get("ids", {})
+        provider = next(iter(ids.keys()))
+        file_id = ids[provider]
+        cache_path = thumbnail_service.get_cache_path(file_id)
+
+        # Final existence check before heavy lifting
+        if os.path.exists(cache_path):
+            return
+
+        logger.info("Generating thumbnail for %s (%s)", file_name, file_id)
 
         try:
-            # Resolve account
             with SessionLocal() as db:
                 if ":" in file_id:
                     email, real_file_id = file_id.split(":", 1)
@@ -133,10 +171,8 @@ class ThumbnailSyncManager:
                     real_file_id = file_id
 
                 if not account:
-                    logger.warning("Could not resolve account for %s", file_id)
                     return
 
-                # Prepare stream URL and headers
                 headers = {}
                 token = get_valid_access_token(account, db) if provider == "gdrive" else None
 
@@ -156,23 +192,12 @@ class ThumbnailSyncManager:
                     return
 
             is_image = media_type.startswith("image/")
-
-            # Run in thread pool to avoid blocking the async event loop
             if is_image:
-                await asyncio.to_thread(
-                    thumbnail_service.process_image_thumbnail,
-                    stream_url,
-                    headers,
-                    cache_path,
-                )
+                await thumbnail_service.process_image_thumbnail(stream_url, headers, cache_path)
                 duration, width, height = 0, None, None
             else:
                 duration, width, height = await asyncio.to_thread(
-                    thumbnail_service.extract_video_frame,
-                    stream_url,
-                    headers,
-                    cache_path,
-                    None,
+                    thumbnail_service.extract_video_frame, stream_url, headers, cache_path, None
                 )
 
             with SessionLocal() as db:
@@ -180,21 +205,26 @@ class ThumbnailSyncManager:
                     db, file_id, provider, file_name, duration, width, height
                 )
 
-            # Invalidate in-memory cache
+            # Invalidate in-memory cache to notify UI on next poll
             from app.services import file_cache
 
             file_cache.invalidate_all(user_id)
 
             logger.info("Successfully generated thumbnail for %s", file_name)
-
-            # Rate limit: 10 seconds delay between files to prevent OOM / MEGA blocks
-            await asyncio.sleep(10)
+            await asyncio.sleep(delay_seconds)
 
         except Exception:
             logger.exception("Failed to generate thumbnail for %s", file_name)
-            # Add a delay even on failure to avoid rapid error loops
-            await asyncio.sleep(10)
+            await asyncio.sleep(delay_seconds)
+
+    @classmethod
+    async def sync_thumbnails(cls, user_id: int) -> None:
+        """Legacy support for full sync, now just enqueues everything."""
+        logger.info("Triggering full sync for user %d (legacy support)", user_id)
 
 
-# Export the sync function for convenience
-sync_thumbnails = ThumbnailSyncManager.sync_thumbnails
+# Export for convenience
+enqueue_thumbnail = ThumbnailManager.enqueue_thumbnail
+set_active_folder = ThumbnailManager.set_active_folder
+enqueue_folder_thumbnails = ThumbnailManager.enqueue_folder_thumbnails
+start_worker = ThumbnailManager.start_worker

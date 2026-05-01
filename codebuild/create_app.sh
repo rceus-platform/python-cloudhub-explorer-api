@@ -152,21 +152,30 @@ fi
 # RUNTIME SETUP (Python)
 # ================================
 if [ "$RUNTIME" = "python" ]; then
-  echo "🐍 Python setup with Poetry"
-
   PYTHON_BIN=$(which python3)
-  POETRY_BIN="/home/$DEPLOY_USER/.local/bin/poetry"
 
-  # Install/Repair Poetry
-  if ! sudo -u "$DEPLOY_USER" [ -x "$POETRY_BIN" ] || ! sudo -u "$DEPLOY_USER" "$POETRY_BIN" --version &>/dev/null; then
-    echo "📥 Installing/Repairing Poetry using $PYTHON_BIN"
-    curl -sSL https://install.python-poetry.org | sudo -u "$DEPLOY_USER" "$PYTHON_BIN" -
+  # Auto-install uv if missing
+  if ! command -v uv &>/dev/null && [ ! -x "/home/$DEPLOY_USER/.local/bin/uv" ]; then
+    echo "📥 Installing uv..."
+    curl -LsSf https://astral.sh/uv/install.sh | sudo -u "$DEPLOY_USER" sh
   fi
 
-  export PATH="/home/$DEPLOY_USER/.local/bin:$PATH"
+  # Detect uv (check path and common install location)
+  if command -v uv &>/dev/null; then
+    USE_UV=true
+    UV_CMD="uv"
+  elif [ -x "/home/$DEPLOY_USER/.local/bin/uv" ]; then
+    USE_UV=true
+    UV_CMD="/home/$DEPLOY_USER/.local/bin/uv"
+  else
+    USE_UV=false
+  fi
 
-  # Configure Poetry
-  sudo -u "$DEPLOY_USER" "$POETRY_BIN" config virtualenvs.in-project true
+  if [ "$USE_UV" = true ]; then
+    echo "⚡ Python setup with uv"
+  else
+    echo "🐍 Python setup with Poetry"
+  fi
 
   # Handle .venv compatibility
   if [ -d ".venv" ]; then
@@ -183,16 +192,31 @@ if [ "$RUNTIME" = "python" ]; then
     fi
   fi
 
-  if [ ! -d ".venv" ]; then
-    echo "📦 Creating .venv with $PYTHON_BIN"
-    sudo -u "$DEPLOY_USER" "$PYTHON_BIN" -m venv .venv
+  if [ "$USE_UV" = true ]; then
+    echo "📦 Installing Python dependencies with uv"
+    sudo -u "$DEPLOY_USER" "$UV_CMD" sync --no-dev
+  else
+    POETRY_BIN="/home/$DEPLOY_USER/.local/bin/poetry"
+
+    # Install/Repair Poetry
+    if ! sudo -u "$DEPLOY_USER" [ -x "$POETRY_BIN" ] || ! sudo -u "$DEPLOY_USER" "$POETRY_BIN" --version &>/dev/null; then
+      echo "📥 Installing/Repairing Poetry using $PYTHON_BIN"
+      curl -sSL https://install.python-poetry.org | sudo -u "$DEPLOY_USER" "$PYTHON_BIN" -
+    fi
+
+    export PATH="/home/$DEPLOY_USER/.local/bin:$PATH"
+
+    # Configure Poetry
+    sudo -u "$DEPLOY_USER" "$POETRY_BIN" config virtualenvs.in-project true
+
+    if [ ! -d ".venv" ]; then
+      echo "📦 Creating .venv with $PYTHON_BIN"
+      sudo -u "$DEPLOY_USER" "$PYTHON_BIN" -m venv .venv
+    fi
+
+    echo "📦 Installing Python dependencies with Poetry"
+    sudo -u "$DEPLOY_USER" "$POETRY_BIN" install --no-root --no-interaction
   fi
-
-  echo "📦 Installing Python dependencies"
-  sudo -u "$DEPLOY_USER" "$POETRY_BIN" install --no-root --no-interaction
-
-  echo "🔧 Upgrading tenacity for Python 3.12+ compatibility"
-  sudo -u "$DEPLOY_USER" .venv/bin/pip install --quiet "tenacity>=8.0.0"
 
   if [ ! -d ".venv" ]; then
     echo "❌ .venv not created"

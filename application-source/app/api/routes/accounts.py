@@ -149,6 +149,14 @@ async def sync_thumbnails(
     return {"message": "Thumbnail sync job started in the background"}
 
 
+@router.get("/sync/status", response_model=SuccessStatusResponse)
+async def get_sync_status():
+    """Check if a thumbnail sync job is currently running."""
+    from app.services.background_service import ThumbnailSyncManager
+
+    return {"status": "running" if ThumbnailSyncManager._is_running else "idle"}
+
+
 @router.delete("/{account_id}", response_model=SuccessStatusResponse)
 def disconnect_account(
     account_id: int,

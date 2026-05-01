@@ -81,7 +81,11 @@ def get_video_state(
     if not record:
         return {"current_time": 0, "duration": 0}
 
-    current_time_val = record.current_time if record.current_time is not None else 0  # type: ignore[comparison-overlap]
-    duration_val = record.duration if record.duration is not None else 0  # type: ignore[comparison-overlap]
+    current_time_val = (
+        record.current_time if record.current_time is not None else 0
+    )
+    duration_val = (
+        record.duration if record.duration is not None else 0
+    )
 
     return {"current_time": current_time_val, "duration": duration_val}

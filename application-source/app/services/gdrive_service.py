@@ -45,9 +45,9 @@ def get_valid_credentials(account: models.Account, db: Session) -> Credentials:
 
 
 def get_drive_service(creds: Credentials):  # type: ignore[no-untyped-def]
-    """Initialize a Google Drive v3 client service instance."""
+    """Initialize a Google Drive v3 client service instance with discovery cache disabled."""
 
-    return build("drive", "v3", credentials=creds)  # type: ignore[no-any-return]
+    return build("drive", "v3", credentials=creds, cache_discovery=False)  # type: ignore[no-any-return]
 
 
 def list_files(
@@ -95,7 +95,7 @@ def list_files(
 
 
 def get_valid_access_token(account: models.Account, db: Session) -> str:
-    """Explicitly force refresh and return a raw access token string."""
+    """Check and return a valid access token, refreshing only if expired."""
 
     creds = Credentials(
         token=account.access_token,
@@ -105,11 +105,16 @@ def get_valid_access_token(account: models.Account, db: Session) -> str:
         client_secret=settings.GOOGLE_CLIENT_SECRET,
     )
 
-    creds.refresh(Request())  # type: ignore[misc]
-    account.access_token = creds.token  # type: ignore[attr-defined]
-    db.commit()
+    if creds.expired or not creds.valid:
+        try:
+            creds.refresh(Request())  # type: ignore[misc]
+            account.access_token = creds.token  # type: ignore[attr-defined]
+            db.commit()
+        except Exception:
+            # Fallback to current token if refresh fails
+            pass
 
-    return creds.token  # type: ignore[return-value]
+    return creds.token if creds.token else str(account.access_token)  # type: ignore[return-value]
 
 
 def get_account_info(account: models.Account, db: Session) -> dict[str, Any]:

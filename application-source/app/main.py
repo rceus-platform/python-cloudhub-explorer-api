@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import accounts, auth, files, video
+from app.services import background_service
 from app.core.config import settings
 from app.core.dependencies import get_current_user, get_current_user_dev
 from app.db.init_db import init_admin_user
@@ -44,6 +45,7 @@ async def lifespan(_: FastAPI):
     """Manage application startup and shutdown events."""
 
     # Startup
+    await background_service.start_worker()
     logger.info("Server started successfully")
     yield
     # Shutdown
