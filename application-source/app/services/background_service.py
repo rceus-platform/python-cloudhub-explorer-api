@@ -39,8 +39,8 @@ class ThumbnailManager:
     def get_semaphore(cls) -> asyncio.Semaphore:
         """Lazily initialize the semaphore to ensure it's bound to the current event loop."""
         if cls._semaphore is None:
-            # Optimized for high-performance hardware (M4)
-            cls._semaphore = asyncio.Semaphore(5)
+            # Optimized for low-resource environments (1GB RAM VM)
+            cls._semaphore = asyncio.Semaphore(1)
         return cls._semaphore
 
     @classmethod
@@ -83,13 +83,13 @@ class ThumbnailManager:
 
     @classmethod
     async def start_worker(cls) -> None:
-        """Start multiple background worker tasks for parallel processing."""
+        """Start background worker tasks."""
         if not cls._worker_tasks:
-            # Launch 4 parallel workers to leverage M4 multicore performance
-            for i in range(4):
+            # Launch only 1 worker to save RAM on 1GB VMs
+            for i in range(1):
                 task = asyncio.create_task(cls._worker_loop(i))
                 cls._worker_tasks.append(task)
-            logger.info("Started 4 parallel thumbnail background workers.")
+            logger.info("Started 1 thumbnail background worker (Low Resource Mode).")
 
     @classmethod
     async def _worker_loop(cls, worker_id: int) -> None:
@@ -215,6 +215,14 @@ class ThumbnailManager:
 
         except Exception:
             logger.exception("Failed to generate thumbnail for %s", file_name)
+            # Mark as attempted (even if failed) to stop the frontend polling loop
+            try:
+                with SessionLocal() as db:
+                    thumbnail_service.save_metadata(
+                        db, file_id, provider, file_name, None, None, None
+                    )
+            except Exception:
+                logger.error("Failed to save failure metadata for %s", file_name)
             await asyncio.sleep(delay_seconds)
 
     @classmethod

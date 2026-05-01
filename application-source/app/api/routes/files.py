@@ -43,8 +43,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Global semaphore to limit concurrent thumbnail extractions (prevents OOM on small VMs)
-thumbnail_semaphore = threading.Semaphore(2)
+# Global semaphore to limit concurrent thumbnail extractions (prevents OOM on 1GB VMs)
+thumbnail_semaphore = threading.Semaphore(1)
 
 
 def _resolve_account(

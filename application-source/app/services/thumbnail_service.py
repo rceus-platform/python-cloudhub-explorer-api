@@ -75,8 +75,8 @@ def extract_video_frame(
 ) -> tuple[float | None, int | None, int | None]:
     """Extract a single frame from a video stream using FFmpeg 8.1 compatible filters."""
 
-    seek_time = f"{timestamp}" if timestamp is not None else "60"
-    input_args = {"ss": seek_time}
+    seek_time = f"{timestamp}" if timestamp is not None else "5"
+    input_args = {"ss": seek_time, "loglevel": "error"}
     # Ensure headers is a dictionary
     if headers and isinstance(headers, dict):
         header_str = "".join([f"{k}: {v}\r\n" for k, v in headers.items()])
@@ -100,17 +100,22 @@ def extract_video_frame(
             logger.exception("ffprobe failed")
 
     # Frame extraction
-    (
-        ffmpeg.input(stream_url, threads=1, **input_args)  # type: ignore[no-untyped-call]
-        .filter(  # type: ignore[no-untyped-call]
-            "setparams", color_primaries="bt709", color_trc="bt709", colorspace="bt709"
+    try:
+        (
+            ffmpeg.input(stream_url, threads=1, **input_args)  # type: ignore[no-untyped-call]
+            .filter(  # type: ignore[no-untyped-call]
+                "setparams", color_primaries="bt709", color_trc="bt709", colorspace="bt709"
+            )
+            .output(  # type: ignore[no-untyped-call]
+                cache_path, vframes=1, vcodec="mjpeg", format="image2", **{"qscale:v": 4}
+            )
+            .overwrite_output()  # type: ignore[no-untyped-call]
+            .run(capture_stdout=True, capture_stderr=True)  # type: ignore[no-untyped-call]
         )
-        .output(  # type: ignore[no-untyped-call]
-            cache_path, vframes=1, vcodec="mjpeg", format="image2", **{"qscale:v": 4}
-        )
-        .overwrite_output()  # type: ignore[no-untyped-call]
-        .run(capture_stdout=True, capture_stderr=True)  # type: ignore[no-untyped-call]
-    )
+    except ffmpeg.Error as e:
+        stderr = e.stderr.decode() if e.stderr else "Unknown error"
+        logger.error("FFmpeg extraction failed for %s: %s", stream_url, stderr)
+        raise RuntimeError(f"FFmpeg failed: {stderr}") from e
 
     return duration, width, height
 
