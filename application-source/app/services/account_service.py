@@ -11,8 +11,8 @@ Boundaries:
 
 from sqlalchemy.orm import Session
 
-from app.db import models
 from app.core.config import settings
+from app.db import models
 
 
 def get_user_accounts(db: Session, user_id: int) -> list[models.Account]:

@@ -134,3 +134,47 @@ def get_account_info(account: models.Account, db: Session) -> dict[str, Any]:
         }
     except Exception:
         return {}
+
+
+def list_all_media(account: models.Account, db: Session) -> list[dict[str, Any]]:
+    """Recursively find all media files in a Google Drive account using broad search."""
+
+    creds = get_valid_credentials(account, db)
+    if not creds:
+        return []
+
+    service = get_drive_service(creds)
+    # Search for common media mime types across the entire drive
+    query = "trashed=false and (mimeType contains 'video/' or mimeType contains 'image/')"
+
+    files = []
+    page_token = None
+    try:
+        while True:
+            results = (
+                service.files()
+                .list(
+                    q=query,
+                    pageSize=1000,
+                    fields="nextPageToken, files(id, name, mimeType, size)",
+                    pageToken=page_token,
+                )
+                .execute()
+            )
+            files.extend(results.get("files", []))
+            page_token = results.get("nextPageToken")
+            if not page_token:
+                break
+    except Exception as e:
+        print(f"GDrive search error for {account.email}: {e}")
+
+    return [
+        {
+            "id": f"{account.email}:{f['id']}",
+            "name": f["name"],
+            "type": "file",
+            "size": int(f.get("size", 0)) if f.get("size") else 0,
+            "provider": "gdrive",
+        }
+        for f in files
+    ]

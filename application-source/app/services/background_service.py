@@ -18,21 +18,33 @@ from app.utils.resource_manager import AdaptiveController
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "ThumbnailSyncManager",
+    "enqueue_thumbnail",
+    "set_active_folder",
+    "enqueue_folder_thumbnails",
+    "start_worker",
+    "sync_thumbnails",
+]
 
-class ThumbnailManager:
+
+class ThumbnailSyncManager:
     """Manager for background thumbnail generation with priority and folder awareness."""
 
-    _queue_obj: asyncio.Queue[tuple[int, str, dict]] | None = None
+    _queue_obj: asyncio.PriorityQueue[tuple[int, int, int, str, dict]] | None = None
     _in_progress: set[str] = set()
     _active_folders: dict[int, str] = {}
     _worker_tasks: list[asyncio.Task] = []
     _semaphore: asyncio.Semaphore | None = None
+    _is_running: bool = False
+    _task_counter: int = 0
+    _queued_ids: set[str] = set()
 
     @classmethod
-    def get_queue(cls) -> asyncio.Queue[tuple[int, str, dict]]:
-        """Lazily initialize the queue to ensure it's bound to the current event loop."""
+    def get_queue(cls) -> asyncio.PriorityQueue[tuple[int, int, int, str, dict]]:
+        """Lazily initialize the priority queue to ensure it's bound to the current event loop."""
         if cls._queue_obj is None:
-            cls._queue_obj = asyncio.Queue()
+            cls._queue_obj = asyncio.PriorityQueue()
         return cls._queue_obj
 
     @classmethod
@@ -42,6 +54,11 @@ class ThumbnailManager:
             # Optimized for low-resource environments (1GB RAM VM)
             cls._semaphore = asyncio.Semaphore(1)
         return cls._semaphore
+
+    @classmethod
+    def is_task_active(cls, file_id: str) -> bool:
+        """Check if a file is currently in the queue or being processed."""
+        return file_id in cls._queued_ids or file_id in cls._in_progress
 
     @classmethod
     def set_active_folder(cls, user_id: int, folder_id: str) -> None:
@@ -78,13 +95,29 @@ class ThumbnailManager:
         if os.path.exists(cache_path):
             return
 
-        await cls.get_queue().put((user_id, folder_id, file_info))
-        logger.info("Enqueued thumbnail task for: %s", file_info.get("name"))
+        # Priority 0: On-demand (root), Priority 1: Active folder, Priority 2: Background/Inactive
+        if folder_id == "root":
+            priority = 0
+        elif cls._active_folders.get(user_id) == folder_id:
+            priority = 1
+        else:
+            priority = 2
+
+        # Use a counter to avoid comparing file_info dicts and ensure FIFO for same priority
+        cls._task_counter += 1
+        cls._queued_ids.add(file_id)
+        await cls.get_queue().put((priority, cls._task_counter, user_id, folder_id, file_info))
+        logger.info(
+            "Enqueued thumbnail task for: %s (Priority: %d)", file_info.get("name"), priority
+        )
 
     @classmethod
     async def start_worker(cls) -> None:
-        """Start background worker tasks."""
+        """Initialize and start background worker tasks."""
         if not cls._worker_tasks:
+            # Ensure queue is created in the correct loop
+            cls.get_queue()
+
             # Launch only 1 worker to save RAM on 1GB VMs
             for i in range(1):
                 task = asyncio.create_task(cls._worker_loop(i))
@@ -98,29 +131,43 @@ class ThumbnailManager:
         controller = AdaptiveController()
 
         while True:
-            user_id, folder_id, file_info = await cls.get_queue().get()
+            # PriorityQueue returns (priority, counter, user_id, folder_id, file_info)
+            priority, _, user_id, folder_id, file_info = await cls.get_queue().get()
+
+            # Extract file_id to manage tracking
+            ids = file_info.get("ids", {})
+            provider = next(iter(ids.keys())) if ids else None
+            file_id = ids[provider] if provider else None
+
+            logger.info(
+                "Worker #%d picked up task: %s (Priority: %d)",
+                worker_id,
+                file_info.get("name"),
+                priority,
+            )
+
             try:
                 # 1. Check if folder is still active
                 active_folder = cls._active_folders.get(user_id)
-                if active_folder != folder_id:
-                    logger.info(
-                        "Skipping task for inactive folder: %s (current active: %s)",
-                        folder_id,
-                        active_folder,
-                    )
+
+                # If the folder is no longer active, we skip it unless it was "root" (on-demand)
+                # We still process it if priority is 0 (on-demand)
+                if priority > 0 and active_folder != folder_id:
+                    logger.debug("Skipping lower-priority task for inactive folder: %s", folder_id)
+                    if file_id:
+                        cls._queued_ids.discard(file_id)
                     continue
 
-                # 2. Get file_id and check in_progress
-                ids = file_info.get("ids", {})
-                if not ids:
+                # 2. Check in_progress to avoid concurrent processing
+                if not file_id:
                     continue
-                provider = next(iter(ids.keys()))
-                file_id = ids[provider]
 
                 if file_id in cls._in_progress:
+                    cls._queued_ids.discard(file_id)
                     continue
 
                 cls._in_progress.add(file_id)
+                cls._queued_ids.discard(file_id)
                 try:
                     semaphore = cls.get_semaphore()
                     # Explicit check to satisfy static analysis
@@ -132,7 +179,7 @@ class ThumbnailManager:
                 finally:
                     cls._in_progress.remove(file_id)
 
-                controller.update()
+                await asyncio.to_thread(controller.update)
             except Exception:
                 logger.exception("Error in thumbnail worker loop")
             finally:
@@ -159,7 +206,13 @@ class ThumbnailManager:
         if os.path.exists(cache_path):
             return
 
-        logger.info("Generating thumbnail for %s (%s)", file_name, file_id)
+        logger.info(
+            "Generating thumbnail for %s (ID: %s, Provider: %s). Cache path: %s",
+            file_name,
+            file_id,
+            provider,
+            os.path.abspath(cache_path),
+        )
 
         try:
             with SessionLocal() as db:
@@ -227,12 +280,87 @@ class ThumbnailManager:
 
     @classmethod
     async def sync_thumbnails(cls, user_id: int) -> None:
-        """Legacy support for full sync, now just enqueues everything."""
-        logger.info("Triggering full sync for user %d (legacy support)", user_id)
+        """Recursively identify all media files and enqueue them for thumbnail generation."""
+        if cls._is_running:
+            logger.info("Sync already in progress for user %d", user_id)
+            return
+
+        cls._is_running = True
+        logger.info("Starting global thumbnail sync for user %d", user_id)
+
+        try:
+            with SessionLocal() as db:
+                accounts = account_service.get_user_accounts(db, user_id)
+
+                for account in accounts:
+                    logger.info(
+                        "Syncing thumbnails for account: %s (%s)", account.email, account.provider
+                    )
+                    media_files = []
+
+                    if account.provider == "gdrive":
+                        # Import here to avoid circular dependencies
+                        from app.services.gdrive_service import list_all_media as gdrive_sync
+
+                        media_files = await asyncio.to_thread(gdrive_sync, account, db)
+
+                    elif account.provider == "mega":
+                        from app.services.mega_service import get_mega_session
+
+                        m = await asyncio.to_thread(
+                            get_mega_session, account.access_token, account.refresh_token
+                        )
+                        if m:
+                            # Pass None as folder_id to signal 'all files' if supported,
+                            # or just fetch all and filter manually
+                            all_nodes = await asyncio.to_thread(m.get_files)
+                            if all_nodes:
+                                for node_id, node_data in all_nodes.items():
+                                    # Type 0 is file, Type 1 is folder
+                                    if node_data.get("t") == 0:
+                                        name = node_data.get("a", {}).get("n", "unknown")
+                                        if any(
+                                            name.lower().endswith(ext)
+                                            for ext in [
+                                                ".mp4",
+                                                ".mkv",
+                                                ".mov",
+                                                ".avi",
+                                                ".wmv",
+                                                ".flv",
+                                                ".webm",
+                                                ".jpg",
+                                                ".jpeg",
+                                                ".png",
+                                                ".webp",
+                                                ".heic",
+                                                ".gif",
+                                                ".bmp",
+                                            ]
+                                        ):
+                                            media_files.append(
+                                                {
+                                                    "ids": {"mega": node_id},
+                                                    "name": name,
+                                                    "type": "file",
+                                                }
+                                            )
+
+                    logger.info("Found %d media files for %s", len(media_files), account.email)
+                    for f in media_files:
+                        # Use priority 2 for background sync tasks
+                        await cls.enqueue_thumbnail(user_id, "background", f)
+
+        except Exception:
+            logger.exception("Error during global thumbnail sync")
+        finally:
+            cls._is_running = False
+            logger.info("Global thumbnail sync finished for user %d", user_id)
 
 
 # Export for convenience
-enqueue_thumbnail = ThumbnailManager.enqueue_thumbnail
-set_active_folder = ThumbnailManager.set_active_folder
-enqueue_folder_thumbnails = ThumbnailManager.enqueue_folder_thumbnails
-start_worker = ThumbnailManager.start_worker
+enqueue_thumbnail = ThumbnailSyncManager.enqueue_thumbnail
+set_active_folder = ThumbnailSyncManager.set_active_folder
+enqueue_folder_thumbnails = ThumbnailSyncManager.enqueue_folder_thumbnails
+start_worker = ThumbnailSyncManager.start_worker
+sync_thumbnails = ThumbnailSyncManager.sync_thumbnails

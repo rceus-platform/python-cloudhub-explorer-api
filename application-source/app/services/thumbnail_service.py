@@ -20,6 +20,7 @@ import httpx
 from PIL import Image, ImageOps
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.db import models
 
 logger = logging.getLogger(__name__)
@@ -28,8 +29,16 @@ logger = logging.getLogger(__name__)
 def get_cache_path(file_id: str, timestamp: int | None = None) -> str:
     """Generate a unique filesystem path for a thumbnail or preview."""
 
-    cache_dir = os.path.abspath(os.path.join(os.getcwd(), "../../cache/thumbnails"))
-    os.makedirs(cache_dir, exist_ok=True)
+    if settings.THUMBNAIL_DIR:
+        cache_dir = settings.THUMBNAIL_DIR
+    else:
+        curr = os.path.abspath(__file__)
+        for _ in range(5):  # Go up 5 levels to reach _SANDBOX
+            curr = os.path.dirname(curr)
+        cache_dir = os.path.join(curr, "cache", "thumbnails")
+
+    if not os.path.exists(cache_dir):
+        os.makedirs(cache_dir, exist_ok=True)
 
     if timestamp is not None:
         return os.path.join(cache_dir, f"preview_{file_id}_{timestamp}.jpg")
@@ -41,7 +50,7 @@ async def process_image_thumbnail(
 ) -> tuple[int, int]:
     """Download, rotate, and resize an image for use as a thumbnail."""
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.get(stream_url, headers=headers)
         if resp.status_code >= 400:
             logger.warning(
@@ -59,11 +68,9 @@ async def process_image_thumbnail(
     if orig_width > 800:
         new_width = 800
         new_height = int(orig_height * (800 / orig_width))
-        img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)  # type: ignore[return-value]
+        img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
 
-    img.convert("RGB").save(
-        cache_path, "JPEG", quality=75, optimize=True
-    )
+    img.convert("RGB").save(cache_path, "JPEG", quality=75, optimize=True)
     return img.size
 
 
@@ -75,47 +82,69 @@ def extract_video_frame(
 ) -> tuple[float | None, int | None, int | None]:
     """Extract a single frame from a video stream using FFmpeg 8.1 compatible filters."""
 
-    seek_time = f"{timestamp}" if timestamp is not None else "5"
-    input_args = {"ss": seek_time, "loglevel": "error"}
-    # Ensure headers is a dictionary
+    # 1. Metadata extraction (Probe first to decide on a smart default if timestamp is None)
+    duration, width, height = None, None, None
+    probe_args = {}
     if headers and isinstance(headers, dict):
         header_str = "".join([f"{k}: {v}\r\n" for k, v in headers.items()])
-        input_args["headers"] = header_str
+        probe_args["headers"] = header_str
 
-    # Metadata extraction
-    duration, width, height = None, None, None
-    if timestamp is None:
-        probe_args = {}
-        if headers and isinstance(headers, dict):
-            header_str = "".join([f"{k}: {v}\r\n" for k, v in headers.items()])
-            probe_args["headers"] = header_str
-
-        try:
-            probe = ffmpeg.probe(stream_url, **probe_args)  # type: ignore[no-untyped-call]
-            video_stream = next((s for s in probe["streams"] if s["codec_type"] == "video"), None)
-            duration = float(probe["format"]["duration"])
-            width = int(video_stream["width"]) if video_stream else None
-            height = int(video_stream["height"]) if video_stream else None
-        except Exception:
-            logger.exception("ffprobe failed")
-
-    # Frame extraction
     try:
-        (
+        probe = ffmpeg.probe(stream_url, **probe_args)  # type: ignore[no-untyped-call]
+        video_stream = next((s for s in probe["streams"] if s["codec_type"] == "video"), None)
+        duration = float(probe["format"]["duration"])
+        width = int(video_stream["width"]) if video_stream else None
+        height = int(video_stream["height"]) if video_stream else None
+    except Exception:
+        logger.debug("ffprobe failed for %s, falling back to basic extraction", stream_url)
+
+    # 2. Determine seek time
+    if timestamp is not None:
+        seek_time = str(timestamp)
+    elif duration and duration > 70:
+        # Match UI default of 60 seconds if the video is long enough
+        seek_time = "60"
+    elif duration and duration > 5:
+        # For shorter videos, take a frame at 10% to avoid ending credits
+        seek_time = str(int(duration * 0.1))
+    else:
+        # Absolute fallback for unknown duration or very short clips
+        seek_time = "2"
+
+    input_args = {"ss": seek_time, "loglevel": "error"}
+    if headers and isinstance(headers, dict):
+        input_args["headers"] = "".join([f"{k}: {v}\r\n" for k, v in headers.items()])
+
+    # Frame extraction with a hard timeout to prevent blocking the worker thread
+    try:
+        # Construct the command for direct execution to handle timeout correctly
+        # We use the internal _get_args to get the command list from ffmpeg-python
+        pipeline = (
             ffmpeg.input(stream_url, threads=1, **input_args)  # type: ignore[no-untyped-call]
+            .filter("thumbnail", 24)  # Pick most representative frame
+            .filter("scale", 640, -2)  # Maintain aspect ratio at 640px width
             .filter(  # type: ignore[no-untyped-call]
                 "setparams", color_primaries="bt709", color_trc="bt709", colorspace="bt709"
             )
-            .output(  # type: ignore[no-untyped-call]
-                cache_path, vframes=1, vcodec="mjpeg", format="image2", **{"qscale:v": 4}
-            )
+            .output(cache_path, vframes=1, vcodec="mjpeg", format="image2", **{"qscale:v": 4})
             .overwrite_output()  # type: ignore[no-untyped-call]
-            .run(capture_stdout=True, capture_stderr=True)  # type: ignore[no-untyped-call]
         )
-    except ffmpeg.Error as e:
+
+        import subprocess
+
+        cmd = pipeline.compile()
+        subprocess.run(cmd, capture_output=True, timeout=30, check=True)
+
+    except subprocess.TimeoutExpired as exc:
+        logger.error("FFmpeg extraction timed out after 30s for %s", stream_url)
+        raise RuntimeError("FFmpeg timeout") from exc
+    except subprocess.CalledProcessError as e:
         stderr = e.stderr.decode() if e.stderr else "Unknown error"
         logger.error("FFmpeg extraction failed for %s: %s", stream_url, stderr)
         raise RuntimeError(f"FFmpeg failed: {stderr}") from e
+    except Exception as e:
+        logger.exception("Unexpected error during FFmpeg extraction")
+        raise e
 
     return duration, width, height
 

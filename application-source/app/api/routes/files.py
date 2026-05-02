@@ -94,6 +94,10 @@ async def list_files(
     if not refresh:
         db_cached = library_service.get_cached_folder(db, user_id, folder_id)
         if db_cached:
+            # Ensure background tasks are enqueued for missing thumbnails even when serving from cache
+            background_service.set_active_folder(user_id, folder_id)
+            await background_service.enqueue_folder_thumbnails(user_id, folder_id, db_cached)
+
             # Re-inject dynamic metadata (watch progress) into cached structure
             enriched_files = library_service.inject_metadata(db, user_id, db_cached)
             result = FileListResponse(folder_id=folder_id, files=enriched_files)
@@ -118,12 +122,12 @@ async def list_files(
     # Save to database cache before enriching with user-specific session data
     library_service.save_folder_cache(db, user_id, folder_id, merged_files)
 
-    # Inject metadata (thumbnails, duration, watch history)
-    enriched_files = library_service.inject_metadata(db, user_id, merged_files)
-
     # Trigger background thumbnail generation for the current folder
     background_service.set_active_folder(user_id, folder_id)
-    await background_service.enqueue_folder_thumbnails(user_id, folder_id, enriched_files)
+    await background_service.enqueue_folder_thumbnails(user_id, folder_id, merged_files)
+
+    # Inject metadata (thumbnails, duration, watch history)
+    enriched_files = library_service.inject_metadata(db, user_id, merged_files)
 
     result = FileListResponse(folder_id=folder_id, files=enriched_files)
     file_cache.set_data(user_id, folder_id, result.model_dump())
@@ -170,27 +174,70 @@ async def stream_file(
 
     async def generate():
         async with httpx.AsyncClient(timeout=30) as client:
-            async with client.stream("GET", url, headers=headers) as response:
-                if response.status_code >= 400:
-                    raise HTTPException(
-                        status_code=response.status_code, detail="Stream source error"
-                    )
+            try:
+                # First attempt
+                response = await client.get(url, headers=headers, follow_redirects=True)
 
+                # If unauthorized, try refreshing once
+                if response.status_code == 401 and provider == "gdrive":
+                    logger.info("Stream unauthorized (401), attempting token refresh...")
+                    new_token = get_valid_access_token(account, db)
+                    headers["Authorization"] = f"Bearer {new_token}"
+                    response = await client.get(url, headers=headers, follow_redirects=True)
+
+                if response.status_code >= 400:
+                    logger.error("Stream source error %d: %s", response.status_code, response.text)
+                    return  # Generator ends here
+
+                # If the source returned partial content, we should too.
+                # However, StreamingResponse in FastAPI makes it hard to change status code
+                # after the generator starts. We need to handle this at the router level.
+                # For now, let's just yield the bytes.
                 async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
                     yield chunk
+            except Exception:
+                logger.exception("Error during streaming generation")
 
-    # We need a first pass to get headers if we want to proxy them correctly
-    # For now, let's simplify and just stream the body.
-    # Proper range handling would require a more complex proxy.
+    # To support seeking, we must handle Range requests and return 206 Partial Content
+    # We'll do a quick HEAD or GET with stream=True to get the source headers
+    async with httpx.AsyncClient(timeout=10) as client:
+        try:
+            # We use a stream request to get headers without downloading the body
+            async with client.stream(
+                "GET", url, headers=headers, follow_redirects=True
+            ) as source_resp:
+                if source_resp.status_code == 401 and provider == "gdrive":
+                    new_token = get_valid_access_token(account, db)
+                    headers["Authorization"] = f"Bearer {new_token}"
+                    # Re-open stream with new token
+                    async with client.stream(
+                        "GET", url, headers=headers, follow_redirects=True
+                    ) as retry_resp:
+                        source_headers = dict(retry_resp.headers)
+                        status_code = retry_resp.status_code
+                else:
+                    source_headers = dict(source_resp.headers)
+                    status_code = source_resp.status_code
+        except Exception as e:
+            logger.error("Failed to connect to stream source: %s", e)
+            raise HTTPException(status_code=502, detail="Failed to connect to stream source") from e
+
+    # Proxy relevant headers
+    response_headers = {
+        "Content-Type": get_media_type(file_name),
+        "Accept-Ranges": "bytes",
+        "Content-Disposition": "inline",
+    }
+
+    if "Content-Range" in source_headers:
+        response_headers["Content-Range"] = source_headers["Content-Range"]
+    if "Content-Length" in source_headers:
+        response_headers["Content-Length"] = source_headers["Content-Length"]
 
     return StreamingResponse(
         generate(),
-        status_code=200,
-        headers={
-            "Content-Type": get_media_type(file_name),
-            "Accept-Ranges": "bytes",
-            "Content-Disposition": "inline",
-        },
+        status_code=status_code if status_code in [200, 206] else 200,
+        headers=response_headers,
     )
 
 
@@ -199,6 +246,7 @@ async def get_thumbnail(
     provider: str,
     file_id: str,
     file_name: str | None = None,
+    v: str | None = None,
     timestamp: int | None = None,
     db: Session = Depends(get_db),
     user: models.User | None = Depends(get_current_user_optional),
@@ -206,16 +254,31 @@ async def get_thumbnail(
     """Retrieve or extract a thumbnail for a given file."""
 
     cache_path = thumbnail_service.get_cache_path(file_id, timestamp)
+    logger.info(
+        "Request for %s (v=%s, ts=%s) checking path: %s",
+        file_id,
+        v,
+        timestamp,
+        os.path.abspath(cache_path),
+    )
 
     # Check cache/db first for standard thumbnails
     if timestamp is None:
         metadata = (
             db.query(models.FileMetadata).filter(models.FileMetadata.file_id == file_id).first()
         )
+        # If file exists on disk, return it even if metadata is slightly out of sync
+        if os.path.exists(cache_path):
+            logger.info("Found thumbnail on disk for %s, returning immediately.", file_id)
+            return FileResponse(cache_path, media_type="image/jpeg")
+
         if metadata and metadata.thumbnail_path:  # type: ignore[return-value]
             thumbnail_path_str = str(metadata.thumbnail_path)
-            if thumbnail_path_str and os.path.exists(cache_path):
-                return FileResponse(cache_path)
+            # We already checked cache_path above, but this handles potential path mismatches in DB
+            if thumbnail_path_str:
+                logger.debug(
+                    "Metadata exists for %s, but file not found on disk at %s", file_id, cache_path
+                )
 
     # Resolve account and stream URL
     user_id = int(user.id) if user else -1  # type: ignore[arg-type]
@@ -226,7 +289,11 @@ async def get_thumbnail(
 
     # If standard thumbnail is missing, trigger background generation and return placeholder
     if timestamp is None:
-        file_info = {"ids": {provider: file_id}, "name": file_name, "type": "file"}
+        file_info = {
+            "ids": {provider: file_id},
+            "name": file_name,
+            "type": "file",
+        }
         # Fire and forget generation
         asyncio.create_task(background_service.enqueue_thumbnail(user_id, "root", file_info))
 

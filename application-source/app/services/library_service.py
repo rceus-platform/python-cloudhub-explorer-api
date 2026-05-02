@@ -137,6 +137,7 @@ def inject_metadata(db: Session, user_id: int, files: list[dict[str, Any]]) -> l
                     "current_time": None,
                     "width": None,
                     "height": None,
+                    "updated_at": None,
                 }
             )
 
@@ -147,6 +148,16 @@ def inject_metadata(db: Session, user_id: int, files: list[dict[str, Any]]) -> l
                     f["width"] = m.width
                     f["height"] = m.height
                     f["updated_at"] = m.updated_at
+
+                # Signal if the file is currently being processed or in the queue
+                from app.services.background_service import ThumbnailSyncManager
+
+                if any(
+                    ThumbnailSyncManager.is_task_active(file_id) for file_id in f["ids"].values()
+                ):
+                    f["is_generating"] = True
+                else:
+                    f["is_generating"] = False
 
                 if file_id in history_map:
                     record = history_map[file_id]

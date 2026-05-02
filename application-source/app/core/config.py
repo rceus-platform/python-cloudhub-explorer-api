@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # Shared secret for internal service communication
     INTERNAL_SECRET: str = ""
 
+    # Directory for thumbnail storage (dynamically resolved if not set)
+    THUMBNAIL_DIR: str = ""
+
     # Toggle for development-only auth bypass
     DEBUG: bool = False
 
