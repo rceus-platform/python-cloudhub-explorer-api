@@ -202,29 +202,32 @@ async def stream_file(
             except Exception:
                 logger.exception("Error during streaming generation")
 
-    # To support seeking, we must handle Range requests and return 206 Partial Content
-    # We'll do a quick HEAD or GET with stream=True to get the source headers
-    async with httpx.AsyncClient(timeout=10) as client:
-        try:
-            # We use a stream request to get headers without downloading the body
-            async with client.stream(
-                "GET", url, headers=headers, follow_redirects=True
-            ) as source_resp:
-                if source_resp.status_code == 401 and provider == "gdrive":
-                    new_token = get_valid_access_token(account, db)
-                    headers["Authorization"] = f"Bearer {new_token}"
-                    # Re-open stream with new token
-                    async with client.stream(
-                        "GET", url, headers=headers, follow_redirects=True
-                    ) as retry_resp:
-                        source_headers = dict(retry_resp.headers)
-                        status_code = retry_resp.status_code
-                else:
-                    source_headers = dict(source_resp.headers)
-                    status_code = source_resp.status_code
-        except Exception as e:
-            logger.error("Failed to connect to stream source: %s", e)
-            raise HTTPException(status_code=502, detail="Failed to connect to stream source") from e
+    source_headers: dict[str, str] = {}
+    status_code = 200
+
+    # Probe upstream headers only when a range request is present.
+    # For standard full-content playback/image loads, avoid a preflight request because
+    # some upstream proxies send headers only after first data chunk.
+    if range_header:
+        async with httpx.AsyncClient(timeout=10) as client:
+            try:
+                async with client.stream(
+                    "GET", url, headers=headers, follow_redirects=True
+                ) as source_resp:
+                    if source_resp.status_code == 401 and provider == "gdrive":
+                        new_token = get_valid_access_token(account, db)
+                        headers["Authorization"] = f"Bearer {new_token}"
+                        async with client.stream(
+                            "GET", url, headers=headers, follow_redirects=True
+                        ) as retry_resp:
+                            source_headers = dict(retry_resp.headers)
+                            status_code = retry_resp.status_code
+                    else:
+                        source_headers = dict(source_resp.headers)
+                        status_code = source_resp.status_code
+            except Exception as e:
+                logger.error("Failed to connect to stream source: %s", e)
+                raise HTTPException(status_code=502, detail="Failed to connect to stream source") from e
 
     # Proxy relevant headers
     response_headers = {

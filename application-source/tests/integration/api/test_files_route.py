@@ -289,7 +289,10 @@ def test_stream_file_connect_error(client, mock_db):
     mock_db._query_results[models.Account] = [acc]
 
     with patch("httpx.AsyncClient.stream", side_effect=Exception("Connection refused")):
-        response = client.get("/files/stream?provider=gdrive&file_id=g@gmail.com:f1")
+        response = client.get(
+            "/files/stream?provider=gdrive&file_id=g@gmail.com:f1",
+            headers={"Range": "bytes=0-99"},
+        )
         assert response.status_code == 502
 
 
