@@ -87,7 +87,7 @@ class ThumbnailSyncManager:
         provider = next(iter(ids.keys()))
         file_id = ids[provider]
 
-        if file_id in cls._in_progress:
+        if file_id in cls._in_progress or file_id in cls._queued_ids:
             return
 
         # Check if already exists in cache to avoid redundant queuing
@@ -139,6 +139,27 @@ class ThumbnailSyncManager:
             provider = next(iter(ids.keys())) if ids else None
             file_id = ids[provider] if provider else None
 
+            # 1. Check if folder is still active or task was root
+            active_folder = cls._active_folders.get(user_id)
+            if priority > 0 and active_folder != folder_id:
+                logger.debug("Skipping lower-priority task for inactive folder: %s", folder_id)
+                if file_id:
+                    cls._queued_ids.discard(file_id)
+                cls.get_queue().task_done()
+                continue
+
+            # 2. Final existence check before logging "pickup"
+            if not file_id:
+                cls.get_queue().task_done()
+                continue
+
+            cache_path = thumbnail_service.get_cache_path(file_id)
+            if os.path.exists(cache_path):
+                logger.debug("Skipping redundant task, thumbnail already exists: %s", file_id)
+                cls._queued_ids.discard(file_id)
+                cls.get_queue().task_done()
+                continue
+
             logger.info(
                 "Worker #%d picked up task: %s (Priority: %d)",
                 worker_id,
@@ -147,30 +168,16 @@ class ThumbnailSyncManager:
             )
 
             try:
-                # 1. Check if folder is still active
-                active_folder = cls._active_folders.get(user_id)
-
-                # If the folder is no longer active, we skip it unless it was "root" (on-demand)
-                # We still process it if priority is 0 (on-demand)
-                if priority > 0 and active_folder != folder_id:
-                    logger.debug("Skipping lower-priority task for inactive folder: %s", folder_id)
-                    if file_id:
-                        cls._queued_ids.discard(file_id)
-                    continue
-
-                # 2. Check in_progress to avoid concurrent processing
-                if not file_id:
-                    continue
-
+                # 3. Check in_progress to avoid concurrent processing (last line of defense)
                 if file_id in cls._in_progress:
                     cls._queued_ids.discard(file_id)
                     continue
 
                 cls._in_progress.add(file_id)
                 cls._queued_ids.discard(file_id)
+
                 try:
                     semaphore = cls.get_semaphore()
-                    # Explicit check to satisfy static analysis
                     if semaphore is not None:
                         async with semaphore:
                             await cls._process_file_thumbnail(
@@ -340,7 +347,7 @@ class ThumbnailSyncManager:
                                         ):
                                             media_files.append(
                                                 {
-                                                    "ids": {"mega": node_id},
+                                                    "ids": {"mega": f"{account.email}:{node_id}"},
                                                     "name": name,
                                                     "type": "file",
                                                 }

@@ -184,7 +184,7 @@ def list_all_media(account: models.Account, db: Session) -> list[dict[str, Any]]
 
     return [
         {
-            "id": f"{account.email}:{f['id']}",
+            "ids": {"gdrive": f"{account.email}:{f['id']}"},
             "name": f["name"],
             "type": "file",
             "size": int(f.get("size", 0)) if f.get("size") else 0,
