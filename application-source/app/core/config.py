@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     # Directory for thumbnail storage (dynamically resolved if not set)
     THUMBNAIL_DIR: str = ""
 
+    # Optional legacy fallback MEGA credentials
+    MEGA_USERNAME: str = ""
+    MEGA_PASSWORD: str = ""
+
     # Toggle for development-only auth bypass
     DEBUG: bool = False
 

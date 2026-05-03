@@ -11,7 +11,7 @@ Boundaries:
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class UserCreate(BaseModel):
@@ -31,17 +31,16 @@ class UserLogin(BaseModel):
 class UserResponse(BaseModel):
     """Schema for public user profile information."""
 
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     username: str
-
-    class Config:
-        """Pydantic configuration for ORM compatibility."""
-
-        from_attributes = True
 
 
 class AccountResponse(BaseModel):
     """Schema for linked account information."""
+
+    model_config = ConfigDict(from_attributes=True)
 
     id: int
     user_id: int
@@ -50,11 +49,6 @@ class AccountResponse(BaseModel):
     is_active: bool
     storage_used: int
     storage_total: int
-
-    class Config:
-        """Pydantic configuration for ORM compatibility."""
-
-        from_attributes = True
 
 
 class AccountAddRequest(BaseModel):
@@ -95,8 +89,8 @@ class VideoProgressResponse(BaseModel):
     """Schema for video progress request."""
 
     file_id: str
-    current_time: int
-    duration: int
+    current_time: float
+    duration: float
 
 
 class VideoProgressUpdateResponse(BaseModel):
@@ -116,8 +110,8 @@ class TokenResponse(BaseModel):
 class VideoStateResponse(BaseModel):
     """Schema for video playback state response."""
 
-    current_time: int
-    duration: int
+    current_time: float
+    duration: float
 
 
 class SuccessStatusResponse(BaseModel):

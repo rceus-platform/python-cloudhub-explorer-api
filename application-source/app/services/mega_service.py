@@ -186,7 +186,8 @@ def list_files(m: Any, account_email: str, folder_id: str = "root"):  # type: ig
 def get_storage_info(m: Any) -> dict[str, Any]:
     """Retrieve storage quota for a MEGA account."""
 
-    lock = _MEGA_LOCKS.get(m.email) if hasattr(m, 'email') else threading.Lock()
+    email = getattr(m, "email", None)
+    lock = _get_lock(email) if email else threading.Lock()
     try:
         # Try get_storage_space first which usually returns a dict with 'used' and 'total' in bytes
         try:

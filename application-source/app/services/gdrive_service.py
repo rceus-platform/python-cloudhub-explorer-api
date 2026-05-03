@@ -10,6 +10,7 @@ Boundaries:
 - Does not handle file merging (delegated to library_service)
 """
 
+from datetime import datetime, UTC
 from typing import Any
 
 from google.auth.transport.requests import Request
@@ -32,10 +33,15 @@ def get_valid_credentials(account: models.Account, db: Session) -> Credentials:
         client_secret=settings.GOOGLE_CLIENT_SECRET,
     )
 
+    if account.expires_at:
+        creds.expiry = datetime.fromtimestamp(account.expires_at, UTC).replace(tzinfo=None)
+
     if creds.expired or not creds.valid:
         try:
             creds.refresh(Request())  # type: ignore[misc]
             account.access_token = creds.token  # type: ignore[attr-defined]
+            if creds.expiry:
+                account.expires_at = int(creds.expiry.timestamp())
             db.commit()
             db.refresh(account)
         except Exception:  # type: ignore[misc]
@@ -47,7 +53,9 @@ def get_valid_credentials(account: models.Account, db: Session) -> Credentials:
 def get_drive_service(creds: Credentials):  # type: ignore[no-untyped-def]
     """Initialize a Google Drive v3 client service instance with discovery cache disabled."""
 
-    return build("drive", "v3", credentials=creds, cache_discovery=False)  # type: ignore[no-any-return]
+    return build(
+        "drive", "v3", credentials=creds, cache_discovery=False
+    )  # type: ignore[no-any-return]
 
 
 def list_files(
@@ -105,10 +113,16 @@ def get_valid_access_token(account: models.Account, db: Session) -> str:
         client_secret=settings.GOOGLE_CLIENT_SECRET,
     )
 
-    if creds.expired or not creds.valid:
+    if account.expires_at:
+        creds.expiry = datetime.fromtimestamp(account.expires_at, UTC).replace(tzinfo=None)
+
+    # If we have no expiry info, it's likely old; force a refresh
+    if creds.expired or not creds.valid or account.expires_at is None:
         try:
             creds.refresh(Request())  # type: ignore[misc]
             account.access_token = creds.token  # type: ignore[attr-defined]
+            if creds.expiry:
+                account.expires_at = int(creds.expiry.timestamp())
             db.commit()
         except Exception:
             # Fallback to current token if refresh fails

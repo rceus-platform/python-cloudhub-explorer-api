@@ -94,7 +94,7 @@ async def list_files(
     if not refresh:
         db_cached = library_service.get_cached_folder(db, user_id, folder_id)
         if db_cached:
-            # Ensure background tasks are enqueued for missing thumbnails even when serving from cache
+            # Ensure background tasks are enqueued for missing thumbnails when serving from cache
             background_service.set_active_folder(user_id, folder_id)
             await background_service.enqueue_folder_thumbnails(user_id, folder_id, db_cached)
 

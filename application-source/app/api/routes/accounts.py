@@ -289,6 +289,7 @@ async def google_callback(
             refresh_token=credentials.refresh_token,
             storage_used=info["storage_used"],
             storage_total=info["storage_total"],
+            expires_at=int(credentials.expiry.timestamp()) if credentials.expiry else None,
             is_active=True,
         )
         db.add(account)

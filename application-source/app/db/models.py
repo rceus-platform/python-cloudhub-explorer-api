@@ -59,6 +59,7 @@ class Account(Base):
     is_active = Column(Boolean, default=True)
     storage_used = Column(BigInteger, default=0)
     storage_total = Column(BigInteger, default=0)
+    expires_at = Column(Integer, nullable=True)
 
     __table_args__ = (UniqueConstraint("email", "provider", name="ix_accounts_email_provider"),)
 

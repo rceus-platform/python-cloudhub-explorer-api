@@ -121,11 +121,17 @@ def extract_video_frame(
         # We use the internal _get_args to get the command list from ffmpeg-python
         pipeline = (
             ffmpeg.input(stream_url, threads=1, **input_args)  # type: ignore[no-untyped-call]
+            .filter(  # type: ignore[no-untyped-call]
+                # Set sane color parameters early to avoid swscaler failures on "reserved"
+                # or unknown primaries
+                "setparams",
+                color_primaries="bt709",
+                color_trc="bt709",
+                colorspace="bt709",
+            )
             .filter("thumbnail", 24)  # Pick most representative frame
             .filter("scale", 640, -2)  # Maintain aspect ratio at 640px width
-            .filter(  # type: ignore[no-untyped-call]
-                "setparams", color_primaries="bt709", color_trc="bt709", colorspace="bt709"
-            )
+            .filter("format", "yuv420p")  # Ensure standard pixel format for MJPEG encoder
             .output(cache_path, vframes=1, vcodec="mjpeg", format="image2", **{"qscale:v": 4})
             .overwrite_output()  # type: ignore[no-untyped-call]
         )

@@ -4,13 +4,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.services.account_service import get_provider_account, get_user_accounts
-
-
-@pytest.fixture
-def mock_db():
-    """Fixture for a mock database session."""
-    return MagicMock()
+from app.services.account_service import (
+    get_account_by_email,
+    get_provider_account,
+    get_user_accounts,
+)
 
 
 @pytest.fixture
@@ -41,7 +39,7 @@ def test_get_user_accounts_prefers_db(mock_db):
     # Mock DB already has a mega account
     db_account = MagicMock()
     db_account.provider = "mega"
-    db_account.access_token = "env_user"
+    db_account.access_token = "db_token"
     mock_db.query.return_value.filter.return_value.all.return_value = [db_account]
 
     accounts = get_user_accounts(mock_db, user_id=1)
@@ -75,3 +73,13 @@ def test_get_provider_account_none_if_no_env(mock_db):
 
         account = get_provider_account(mock_db, user_id=1, provider="mega")
         assert account is None
+
+
+def test_get_account_by_email(mock_db):
+    """Test finding a specific account by provider and email."""
+    mock_acc = MagicMock()
+    # Code uses: db.query(models.Account).filter(cond1, cond2, cond3).first()
+    mock_db.query.return_value.filter.return_value.first.return_value = mock_acc
+
+    result = get_account_by_email(mock_db, 1, "gdrive", "test@example.com")
+    assert result == mock_acc
