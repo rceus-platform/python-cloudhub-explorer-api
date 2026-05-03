@@ -8,6 +8,11 @@ from app.db import models
 from app.services import file_cache
 
 
+async def _aiter_bytes(chunks):
+    for chunk in chunks:
+        yield chunk
+
+
 @pytest.fixture(autouse=True)
 def clear_cache():
     """Clear the in-memory file cache before each test."""
@@ -142,6 +147,9 @@ def test_stream_file_gdrive(client, mock_db):
         with patch("httpx.AsyncClient.stream") as mock_stream:
             mock_stream.return_value.__aenter__.return_value.status_code = 200
             mock_stream.return_value.__aenter__.return_value.headers = {"Content-Length": "100"}
+            mock_stream.return_value.__aenter__.return_value.aiter_bytes.return_value = _aiter_bytes([
+                b"data"
+            ])
 
             response = client.get("/files/stream?provider=gdrive&file_id=test@gdrive.com:fid1")
             assert response.status_code == 200
@@ -260,7 +268,7 @@ def test_stream_file_refresh_retry(client, mock_db):
         mock_resp_401.status_code = 401
         mock_resp_200 = MagicMock()
         mock_resp_200.status_code = 200
-        mock_resp_200.aiter_bytes.return_value = [b"data"]
+        mock_resp_200.aiter_bytes.return_value = _aiter_bytes([b"data"])
 
         mock_get.side_effect = [mock_resp_401, mock_resp_200]
 
@@ -269,6 +277,7 @@ def test_stream_file_refresh_retry(client, mock_db):
                 mock_stream_ctx = mock_stream.return_value.__aenter__.return_value
                 mock_stream_ctx.status_code = 200
                 mock_stream_ctx.headers = {"Content-Length": "100"}
+                mock_stream_ctx.aiter_bytes.return_value = _aiter_bytes([b"data"])
 
                 response = client.get("/files/stream?provider=gdrive&file_id=g@gmail.com:f1")
                 assert response.status_code == 200
@@ -315,6 +324,7 @@ def test_stream_file_mega(client, mock_db):
         mock_stream_ctx = mock_stream.return_value.__aenter__.return_value
         mock_stream_ctx.status_code = 200
         mock_stream_ctx.headers = {"Content-Length": "100"}
+        mock_stream_ctx.aiter_bytes.return_value = _aiter_bytes([b"data"])
 
         response = client.get("/files/stream?provider=mega&file_id=m@mega.nz:f1")
         assert response.status_code == 200
@@ -331,12 +341,52 @@ def test_stream_file_range(client, mock_db):
             mock_stream_ctx = mock_stream.return_value.__aenter__.return_value
             mock_stream_ctx.status_code = 206
             mock_stream_ctx.headers = {"Content-Range": "bytes 0-99/100"}
+            mock_stream_ctx.aiter_bytes.return_value = _aiter_bytes([b"data"])
 
             response = client.get(
                 "/files/stream?provider=gdrive&file_id=f1", headers={"Range": "bytes=0-99"}
             )
             assert response.status_code == 206
             assert response.headers["Content-Range"] == "bytes 0-99/100"
+
+
+def test_stream_file_streams_chunks_and_forwards_cache_headers(client, mock_db):
+    """Test streaming response body and cache-related headers passthrough."""
+    acc = models.Account(id=1, user_id=1, email="g@gmail.com", provider="gdrive")
+    mock_db._query_results[models.Account] = [acc]
+
+    with patch("app.api.routes.files.get_valid_access_token", return_value="token"):
+        with patch("httpx.AsyncClient.stream") as mock_stream:
+            header_resp = AsyncMock()
+            header_resp.status_code = 206
+            header_resp.headers = {
+                "Content-Range": "bytes 0-3/4",
+                "Content-Length": "4",
+                "Cache-Control": "public, max-age=60",
+                "ETag": '"abc123"',
+                "Last-Modified": "Mon, 01 Jan 2024 00:00:00 GMT",
+            }
+
+            body_resp = MagicMock()
+            body_resp.status_code = 206
+            body_resp.aiter_bytes.return_value = _aiter_bytes([b"ab", b"cd"])
+
+            header_ctx = AsyncMock()
+            header_ctx.__aenter__.return_value = header_resp
+            body_ctx = AsyncMock()
+            body_ctx.__aenter__.return_value = body_resp
+            mock_stream.side_effect = [header_ctx, body_ctx]
+
+            response = client.get(
+                "/files/stream?provider=gdrive&file_id=f1", headers={"Range": "bytes=0-3"}
+            )
+
+            assert response.status_code == 206
+            assert response.content == b"abcd"
+            assert response.headers["Content-Range"] == "bytes 0-3/4"
+            assert response.headers["Cache-Control"] == "public, max-age=60"
+            assert response.headers["ETag"] == '"abc123"'
+            assert response.headers["Last-Modified"] == "Mon, 01 Jan 2024 00:00:00 GMT"
 
 
 def test_get_thumbnail_metadata_mismatch(client, mock_db):

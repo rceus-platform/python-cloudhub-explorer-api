@@ -173,28 +173,32 @@ async def stream_file(
         raise HTTPException(status_code=400, detail="Unsupported provider")
 
     async def generate():
-        async with httpx.AsyncClient(timeout=30) as client:
+        timeout = httpx.Timeout(connect=10, read=None, write=30, pool=30)
+        async with httpx.AsyncClient(timeout=timeout) as client:
             try:
                 # First attempt
-                response = await client.get(url, headers=headers, follow_redirects=True)
+                async with client.stream("GET", url, headers=headers, follow_redirects=True) as response:
+                    # If unauthorized, try refreshing once
+                    if response.status_code == 401 and provider == "gdrive":
+                        logger.info("Stream unauthorized (401), attempting token refresh...")
+                        new_token = get_valid_access_token(account, db)
+                        headers["Authorization"] = f"Bearer {new_token}"
+                        async with client.stream(
+                            "GET", url, headers=headers, follow_redirects=True
+                        ) as retry_response:
+                            if retry_response.status_code >= 400:
+                                logger.error("Stream source error %d", retry_response.status_code)
+                                return
+                            async for chunk in retry_response.aiter_bytes(chunk_size=1024 * 1024):
+                                yield chunk
+                        return
 
-                # If unauthorized, try refreshing once
-                if response.status_code == 401 and provider == "gdrive":
-                    logger.info("Stream unauthorized (401), attempting token refresh...")
-                    new_token = get_valid_access_token(account, db)
-                    headers["Authorization"] = f"Bearer {new_token}"
-                    response = await client.get(url, headers=headers, follow_redirects=True)
+                    if response.status_code >= 400:
+                        logger.error("Stream source error %d", response.status_code)
+                        return
 
-                if response.status_code >= 400:
-                    logger.error("Stream source error %d: %s", response.status_code, response.text)
-                    return  # Generator ends here
-
-                # If the source returned partial content, we should too.
-                # However, StreamingResponse in FastAPI makes it hard to change status code
-                # after the generator starts. We need to handle this at the router level.
-                # For now, let's just yield the bytes.
-                async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
-                    yield chunk
+                    async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
+                        yield chunk
             except Exception:
                 logger.exception("Error during streaming generation")
 
@@ -229,10 +233,18 @@ async def stream_file(
         "Content-Disposition": "inline",
     }
 
-    if "Content-Range" in source_headers:
-        response_headers["Content-Range"] = source_headers["Content-Range"]
-    if "Content-Length" in source_headers:
-        response_headers["Content-Length"] = source_headers["Content-Length"]
+    content_range = source_headers.get("Content-Range") or source_headers.get("content-range")
+    if content_range:
+        response_headers["Content-Range"] = content_range
+
+    content_length = source_headers.get("Content-Length") or source_headers.get("content-length")
+    if content_length:
+        response_headers["Content-Length"] = content_length
+
+    for header_name in ["Cache-Control", "ETag", "Last-Modified"]:
+        value = source_headers.get(header_name) or source_headers.get(header_name.lower())
+        if value:
+            response_headers[header_name] = value
 
     return StreamingResponse(
         generate(),
