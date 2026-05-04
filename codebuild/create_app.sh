@@ -230,10 +230,17 @@ if [ "$RUNTIME" = "python" ]; then
     echo "🎨 Collecting static files..."
     sudo -u "$DEPLOY_USER" .venv/bin/python manage.py collectstatic --noinput
   elif [ -f "app/main.py" ]; then
-    echo "🚀 FastAPI app detected. Initializing database schema..."
-    # Attempt to initialize DB schema if models are present
-    sudo -u "$DEPLOY_USER" .venv/bin/python -c "try: from app.db.models import Base; from app.db.session import engine; Base.metadata.create_all(bind=engine); print('✅ Database schema initialized')
+    echo "🚀 FastAPI app detected. Running database setup..."
+
+    if [ -f "alembic.ini" ]; then
+      echo "🗄️ Running Alembic migrations"
+      sudo -u "$DEPLOY_USER" .venv/bin/alembic upgrade head
+      echo "✅ Alembic migrations applied"
+    else
+      echo "ℹ️ alembic.ini not found. Falling back to SQLAlchemy create_all"
+      sudo -u "$DEPLOY_USER" .venv/bin/python -c "try: from app.db.models import Base; from app.db.session import engine; Base.metadata.create_all(bind=engine); print('✅ Database schema initialized')
 except Exception as e: print(f'ℹ️ Database auto-init skipped or failed: {e}')"
+    fi
   else
     echo "ℹ️ No manage.py or app/main.py found. Skipping database-specific steps."
   fi

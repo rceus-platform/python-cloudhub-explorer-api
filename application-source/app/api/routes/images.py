@@ -56,8 +56,11 @@ def _build_upstream_request(
         return f"https://www.googleapis.com/drive/v3/files/{real_file_id}?alt=media", headers
 
     if provider == "mega":
-        headers["X-Mega-Email"] = str(account.access_token)
-        headers["X-Mega-Password"] = str(account.refresh_token)
+        mega_password = account.refresh_token or account.sid_or_token
+        if not mega_password:
+            raise HTTPException(status_code=401, detail="MEGA credentials missing")
+        headers["X-Mega-Email"] = str(account.email or account.access_token)
+        headers["X-Mega-Password"] = str(mega_password)
         if settings.INTERNAL_SECRET:
             headers["X-Internal-Secret"] = settings.INTERNAL_SECRET
         return f"http://localhost:4000/stream?fileId={real_file_id}", headers

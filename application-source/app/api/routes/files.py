@@ -164,9 +164,12 @@ async def stream_file(
         url = f"https://www.googleapis.com/drive/v3/files/{real_file_id}?alt=media"
         headers["Authorization"] = f"Bearer {token}"
     elif provider == "mega":
+        mega_password = account.refresh_token or account.sid_or_token
+        if not mega_password:
+            raise HTTPException(status_code=401, detail="MEGA credentials missing")
         url = f"http://localhost:4000/stream?fileId={real_file_id}"
-        headers["X-Mega-Email"] = str(account.access_token)
-        headers["X-Mega-Password"] = str(account.refresh_token)
+        headers["X-Mega-Email"] = str(account.email or account.access_token)
+        headers["X-Mega-Password"] = str(mega_password)
         if settings.INTERNAL_SECRET:
             headers["X-Internal-Secret"] = settings.INTERNAL_SECRET
     else:
@@ -339,8 +342,11 @@ async def get_thumbnail(
         if provider == "gdrive" and token:
             headers["Authorization"] = f"Bearer {token}"
         elif provider == "mega":
-            headers["X-Mega-Email"] = str(account.access_token)
-            headers["X-Mega-Password"] = str(account.refresh_token)
+            mega_password = account.refresh_token or account.sid_or_token
+            if not mega_password:
+                raise HTTPException(status_code=401, detail="MEGA credentials missing")
+            headers["X-Mega-Email"] = str(account.email or account.access_token)
+            headers["X-Mega-Password"] = str(mega_password)
             if settings.INTERNAL_SECRET:
                 headers["X-Internal-Secret"] = settings.INTERNAL_SECRET
 
@@ -394,8 +400,11 @@ async def update_thumbnail(
         if provider == "gdrive" and token:
             headers["Authorization"] = f"Bearer {token}"
         elif provider == "mega":
-            headers["X-Mega-Email"] = str(account.access_token)
-            headers["X-Mega-Password"] = str(account.refresh_token)
+            mega_password = account.refresh_token or account.sid_or_token
+            if not mega_password:
+                raise HTTPException(status_code=401, detail="MEGA credentials missing")
+            headers["X-Mega-Email"] = str(account.email or account.access_token)
+            headers["X-Mega-Password"] = str(mega_password)
             if settings.INTERNAL_SECRET:
                 headers["X-Internal-Secret"] = settings.INTERNAL_SECRET
 

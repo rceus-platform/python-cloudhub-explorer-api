@@ -243,9 +243,15 @@ class ThumbnailSyncManager:
                     if token:
                         headers["Authorization"] = f"Bearer {token}"
                 elif provider == "mega":
+                    mega_password = account.refresh_token or account.sid_or_token
+                    if not mega_password:
+                        logger.warning(
+                            "Skipping MEGA thumbnail for %s: missing credentials", account.email
+                        )
+                        return
                     stream_url = f"http://localhost:4000/stream?fileId={real_file_id}"
-                    headers["X-Mega-Email"] = str(account.access_token)
-                    headers["X-Mega-Password"] = str(account.refresh_token)
+                    headers["X-Mega-Email"] = str(account.email or account.access_token)
+                    headers["X-Mega-Password"] = str(mega_password)
                     if settings.INTERNAL_SECRET:
                         headers["X-Internal-Secret"] = settings.INTERNAL_SECRET
                 else:
