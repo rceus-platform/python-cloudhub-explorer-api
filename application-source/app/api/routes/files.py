@@ -177,7 +177,9 @@ async def stream_file(
         async with httpx.AsyncClient(timeout=timeout) as client:
             try:
                 # First attempt
-                async with client.stream("GET", url, headers=headers, follow_redirects=True) as response:
+                async with client.stream(
+                    "GET", url, headers=headers, follow_redirects=True
+                ) as response:
                     # If unauthorized, try refreshing once
                     if response.status_code == 401 and provider == "gdrive":
                         logger.info("Stream unauthorized (401), attempting token refresh...")
@@ -227,7 +229,9 @@ async def stream_file(
                         status_code = source_resp.status_code
             except Exception as e:
                 logger.error("Failed to connect to stream source: %s", e)
-                raise HTTPException(status_code=502, detail="Failed to connect to stream source") from e
+                raise HTTPException(
+                    status_code=502, detail="Failed to connect to stream source"
+                ) from e
 
     # Proxy relevant headers
     response_headers = {

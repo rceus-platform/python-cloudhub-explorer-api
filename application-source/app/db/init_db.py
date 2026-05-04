@@ -6,12 +6,26 @@ Responsibilities:
 """
 
 import logging
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.db import models
 from app.core.config import settings
 from app.core.security import hash_password
 
 logger = logging.getLogger(__name__)
+
+
+def ensure_schema_compatibility(db: Session) -> None:
+    """Apply lightweight schema fixes for older SQLite databases."""
+
+    result = db.execute(text("PRAGMA table_info(accounts)"))
+    account_columns = {row[1] for row in result}
+
+    if "expires_at" not in account_columns:
+        logger.info("Applying schema patch: adding accounts.expires_at")
+        db.execute(text("ALTER TABLE accounts ADD COLUMN expires_at INTEGER"))
+        db.commit()
+        logger.info("Schema patch applied successfully")
 
 
 def init_admin_user(db: Session) -> None:

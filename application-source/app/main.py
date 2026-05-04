@@ -21,7 +21,7 @@ from app.api.routes import accounts, auth, files, images, video
 from app.services import background_service
 from app.core.config import settings
 from app.core.dependencies import get_current_user, get_current_user_dev
-from app.db.init_db import init_admin_user
+from app.db.init_db import ensure_schema_compatibility, init_admin_user
 from app.db.models import Base
 from app.db.session import SessionLocal, engine
 
@@ -37,6 +37,7 @@ Base.metadata.create_all(bind=engine)
 
 # Initialize mandatory records (e.g. admin user)
 with SessionLocal() as db:
+    ensure_schema_compatibility(db)
     init_admin_user(db)
 
 
