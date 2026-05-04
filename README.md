@@ -125,6 +125,30 @@ Start the development server with hot-reload:
 uv run uvicorn app.main:app --reload --port 8000
 ```
 
+### Database Migrations (Alembic)
+
+This project now uses Alembic for schema upgrades.
+
+Run migrations before starting the API in any deployed environment:
+
+```bash
+cd python-cloudhub-explorer-api/application-source
+uv run alembic upgrade head
+```
+
+Check migration state:
+
+```bash
+uv run alembic current
+uv run alembic history --verbose
+```
+
+Create a new migration after model changes:
+
+```bash
+uv run alembic revision --autogenerate -m "describe change"
+```
+
 The API documentation (Swagger UI) will be available at `http://localhost:8000/docs`.
 
 ## API Endpoints

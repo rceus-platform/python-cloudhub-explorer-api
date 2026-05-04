@@ -6,6 +6,7 @@ authors = [{ name = "Your Name", email = "your.email@example.com" }]
 license = { text = "MIT" }
 requires-python = ">=3.10"
 dependencies = [
+    "alembic==1.16.5",
     "fastapi==0.116.1",
     "uvicorn==0.35.0",
     "sqlalchemy==2.0.44",
