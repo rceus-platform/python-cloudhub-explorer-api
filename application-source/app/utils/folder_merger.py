@@ -48,9 +48,9 @@ def merge_files(file_lists: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
             # Normalize key order for consistent frontend stringification
             merged[key]["ids"] = dict(sorted(merged[key]["ids"].items()))
 
-            # Add size for files
+            # Add size (accumulate for merged items)
+            merged[key]["size"] = merged[key].get("size", 0) + f.get("size", 0)
             if f["type"] == "file":
-                merged[key]["size"] = f.get("size", 0)
                 if f.get("thumbnail_url"):
                     merged[key]["thumbnail_url"] = f["thumbnail_url"]
 

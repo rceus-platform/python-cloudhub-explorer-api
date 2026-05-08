@@ -26,7 +26,9 @@ from app.utils.folder_merger import merge_files  # type: ignore[import]
 logger = logging.getLogger(__name__)
 
 
-async def list_all_files(db: Session, accounts: list[Any], folder_id: str) -> list[dict[str, Any]]:
+async def list_all_files(
+    db: Session, accounts: list[Any], folder_id: str, sync: bool = False
+) -> list[dict[str, Any]]:
     """Fetch and merge file lists from all provided accounts for a given folder in parallel."""
 
     # Resolve folder mapping if it's a JSON string
@@ -74,19 +76,28 @@ async def list_all_files(db: Session, accounts: list[Any], folder_id: str) -> li
         )
 
         try:
+            res = []
             if acc.provider == "gdrive":
                 res = await asyncio.to_thread(gdrive_list, acc, db, target_id)
                 logger.info("GDrive account %s returned %d files", acc.email, len(res))
-                return res
             elif acc.provider == "mega":
                 m = await asyncio.to_thread(get_mega_session, acc.access_token, acc.refresh_token)
                 if m:
                     res = await asyncio.to_thread(mega_list, m, acc.email, target_id)
                     logger.info("MEGA account %s returned %d files", acc.email, len(res))
-                    return res
                 else:
                     logger.warning("Failed to get MEGA session for %s", acc.email)
-            return []
+
+            # Manual refresh: sync this account's specific data to the unified DB
+            if sync and res:
+                from app.services import sync_service
+
+                user_id = int(acc.user_id)  # type: ignore[arg-type]
+                await asyncio.to_thread(
+                    sync_service.sync_account_to_db, db, user_id, acc.provider, target_id, res
+                )
+
+            return res
         except Exception:
             logger.exception("Error listing files for %s (%s)", acc.provider, acc.email)
             if acc.provider == "mega":
@@ -94,7 +105,7 @@ async def list_all_files(db: Session, accounts: list[Any], folder_id: str) -> li
             return []
 
     # Run all account fetches in parallel
-    logger.info("Starting parallel fetch for %d accounts", len(accounts))
+    logger.info("Starting parallel fetch for %d accounts (sync=%s)", len(accounts), sync)
     results = await asyncio.gather(*(fetch_account_files(acc) for acc in accounts))
 
     # Filter out empty lists and merge
@@ -104,18 +115,28 @@ async def list_all_files(db: Session, accounts: list[Any], folder_id: str) -> li
 
 
 def inject_metadata(db: Session, user_id: int, files: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Augment file items with persisted metadata and user watch history."""
+    """Augment file/folder items with persisted metadata, recursive sizes, and watch history."""
 
     all_ids = []
     for f in files:
-        if f["type"] == "file":
-            all_ids.extend(f["ids"].values())  # type: ignore[index,union-attr]
+        all_ids.extend(f["ids"].values())
 
-    # Fetch all relevant metadata in one query
+    # Fetch relevant metadata for files (thumbnails, dimensions, duration)
     persisted_metadata = {
         m.file_id: m
         for m in db.query(models.FileMetadata)
         .filter(models.FileMetadata.file_id.in_(all_ids))  # type: ignore[arg-type]
+        .all()
+    }
+
+    # Fetch recursive sizes from the unified FileSystemItem table (calculated during sync)
+    persisted_sizes = {
+        item.provider_id: item.size
+        for item in db.query(models.FileSystemItem)
+        .filter(
+            models.FileSystemItem.user_id == user_id,
+            models.FileSystemItem.provider_id.in_(all_ids),
+        )
         .all()
     }
 
@@ -128,6 +149,33 @@ def inject_metadata(db: Session, user_id: int, files: list[dict[str, Any]]) -> l
         history_map = {h.file_id: h for h in history_records}
 
     for f in files:
+        # Inject cached recursive size if available (for both files and folders)
+        found_db_size = False
+        total_db_size = 0
+        for _, provider_id in f["ids"].items():
+            if provider_id in persisted_sizes:
+                db_size = persisted_sizes[provider_id]
+                if db_size is not None:
+                    # For folders, we only want to add if we actually have a calculated size (>0)
+                    # or if it's the only provider we have.
+                    if f["type"] == "folder":
+                        total_db_size += db_size
+                        found_db_size = True
+                    elif db_size > 0:
+                        f["size"] = db_size
+                        found_db_size = True
+                        break
+
+        if f["type"] == "folder" and found_db_size:
+            f["size"] = total_db_size
+
+        # Fallback: Calculate folder size from existing folder cache if not in unified DB
+        if f["type"] == "folder" and not found_db_size:
+            # The folder's 'id' in the merged view is a JSON string of its constituent IDs
+            # However, we often use the stringified version as the cache key
+            folder_key = json.dumps(f["ids"], sort_keys=True)
+            f["size"] = calculate_folder_size_from_cache(db, user_id, folder_key)
+
         if f["type"] == "file":
             # Initialize defaults
             f.update(
@@ -208,3 +256,25 @@ def save_folder_cache(
         db.add(cache)
 
     db.commit()
+
+
+def calculate_folder_size_from_cache(db: Session, user_id: int, folder_id: str) -> int:
+    """Recursively calculate folder size using available folder_cache entries.
+
+    This provides 'just-in-time' calculation for folders the user has visited,
+    even if a full global sync hasn't run yet.
+    """
+    cache_data = get_cached_folder(db, user_id, folder_id)
+    if not cache_data:
+        return 0
+
+    total = 0
+    for item in cache_data:
+        if item["type"] == "file":
+            total += item.get("size", 0)
+        elif item["type"] == "folder":
+            # If the folder has its own cache entry, recurse
+            sub_folder_id = json.dumps(item["ids"], sort_keys=True)
+            total += calculate_folder_size_from_cache(db, user_id, sub_folder_id)
+
+    return total

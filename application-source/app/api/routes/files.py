@@ -117,7 +117,10 @@ async def list_files(
             raise HTTPException(status_code=400, detail="Invalid folder_id format") from exc
 
     # 3. Fetch from cloud accounts (Final fallback or if refresh=True)
-    merged_files = await library_service.list_all_files(db, accounts, target_folder_id)
+    # The 'sync=refresh' flag triggers per-account database updates for folder sizes.
+    merged_files = await library_service.list_all_files(
+        db, accounts, target_folder_id, sync=refresh
+    )
 
     # Save to database cache before enriching with user-specific session data
     library_service.save_folder_cache(db, user_id, folder_id, merged_files)

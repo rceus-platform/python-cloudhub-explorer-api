@@ -155,6 +155,17 @@ def list_files(m: Any, account_email: str, folder_id: str = "root"):  # type: ig
                     root_handle = h
                     break
 
+        def _get_folder_size(fid: str) -> int:
+            """Recursively calculate the size of a folder from the in-memory file list."""
+            total = 0
+            for child_id, child_data in files.items():  # type: ignore[union-attr]
+                if child_data.get("p") == fid:  # type: ignore[union-attr]
+                    if child_data.get("t") == 0:  # File
+                        total += child_data.get("s", 0)  # type: ignore[union-attr]
+                    elif child_data.get("t") == 1:  # Folder
+                        total += _get_folder_size(child_id)
+            return total
+
         result = []
         for file_id, file_data in files.items():  # type: ignore[union-attr]
             parent_id = file_data.get("p")  # type: ignore[union-attr]
@@ -168,12 +179,15 @@ def list_files(m: Any, account_email: str, folder_id: str = "root"):  # type: ig
             if file_data.get("t") in [2, 3, 4]:  # type: ignore[union-attr]
                 continue
 
+            is_folder = file_data.get("t") == 1
+            item_size = _get_folder_size(file_id) if is_folder else file_data.get("s", 0)
+
             result.append(  # type: ignore[union-attr]
                 {  # type: ignore[union-attr]
                     "id": f"{account_email}:{file_id}",
                     "name": file_data.get("a", {}).get("n", "unknown"),
-                    "type": ("folder" if file_data.get("t") == 1 else "file"),
-                    "size": file_data.get("s", 0),
+                    "type": ("folder" if is_folder else "file"),
+                    "size": item_size,
                     "provider": "mega",
                 }
             )

@@ -17,7 +17,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.api.routes import accounts, auth, files, images, video
+from app.api.routes import accounts, auth, files, images, items, video
 from app.services import background_service
 from app.core.config import settings
 from app.core.dependencies import get_current_user, get_current_user_dev
@@ -76,6 +76,7 @@ app.include_router(accounts.router, prefix="/accounts", tags=["Accounts"])
 app.include_router(files.router, prefix="/files", tags=["Files"])
 app.include_router(images.router, prefix="/images", tags=["Images"])
 app.include_router(video.router, prefix="/video", tags=["Video"])
+app.include_router(items.router, prefix="/items", tags=["Items"])
 
 # Serve static assets (placeholders, etc.)
 app.mount("/assets", StaticFiles(directory="assets"), name="assets")
