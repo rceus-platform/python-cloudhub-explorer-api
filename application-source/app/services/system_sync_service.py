@@ -405,3 +405,9 @@ def _recalculate_all_folder_sizes(db: Session, user_id: int) -> None:
     except Exception as e:
         logger.error("Error recalculating folder sizes for user %d: %s", user_id, e)
         db.rollback()
+
+
+def recalculate_all_folder_sizes(db: Session, user_id: int) -> None:
+    """Public wrapper to recalculate all folder sizes for a user."""
+    logger.info("Manual folder size recalculation requested for user %d", user_id)
+    _recalculate_all_folder_sizes(db, user_id)

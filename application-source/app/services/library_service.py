@@ -39,34 +39,40 @@ async def list_all_files(
         except (json.JSONDecodeError, TypeError):
             pass
 
-    async def fetch_account_files(acc: Any) -> list[dict[str, Any]]:
+    async def fetch_account_files(
+        acc: Any,
+    ) -> tuple[Any, str | None, str | None, list[dict[str, Any]]]:
         # Resolve the specific folder ID for this provider
         raw_target_id = folder_map.get(acc.provider, folder_id)
 
         # If the ID is account-aware (email:id), check if it belongs to this account
         target_id = raw_target_id
+        sync_parent_provider_id: str | None = raw_target_id
 
         # Handle list of IDs (merged folders)
         if isinstance(raw_target_id, list):
             # Find the ID in the list that belongs to this account
             target_id = None
+            sync_parent_provider_id = None
             for rid in raw_target_id:
                 if ":" in rid:
                     email_prefix, actual_id = rid.split(":", 1)
                     if email_prefix == acc.email:
                         target_id = actual_id
+                        sync_parent_provider_id = rid
                         break
 
             if target_id is None:
-                return []
+                return acc, None, None, []
 
         # Handle single ID
         elif ":" in raw_target_id:
             email_prefix, actual_id = raw_target_id.split(":", 1)
             if email_prefix != acc.email:
                 # This folder ID belongs to a different account of the same provider
-                return []
+                return acc, None, None, []
             target_id = actual_id
+            sync_parent_provider_id = raw_target_id
 
         logger.info(
             "Fetching files for account %s (%s) in folder %s...",
@@ -78,7 +84,7 @@ async def list_all_files(
         try:
             res = []
             if acc.provider == "gdrive":
-                res = await asyncio.to_thread(gdrive_list, acc, db, target_id)
+                res = await asyncio.to_thread(gdrive_list, acc, None, target_id)
                 logger.info("GDrive account %s returned %d files", acc.email, len(res))
             elif acc.provider == "mega":
                 m = await asyncio.to_thread(get_mega_session, acc.access_token, acc.refresh_token)
@@ -88,28 +94,32 @@ async def list_all_files(
                 else:
                     logger.warning("Failed to get MEGA session for %s", acc.email)
 
-            # Manual refresh: sync this account's specific data to the unified DB
-            if sync and res:
-                from app.services import sync_service
-
-                user_id = int(acc.user_id)  # type: ignore[arg-type]
-                await asyncio.to_thread(
-                    sync_service.sync_account_to_db, db, user_id, acc.provider, target_id, res
-                )
-
-            return res
+            return acc, target_id, sync_parent_provider_id, res
         except Exception:
             logger.exception("Error listing files for %s (%s)", acc.provider, acc.email)
             if acc.provider == "mega":
                 await asyncio.to_thread(invalidate_session, acc.access_token)
-            return []
+            return acc, target_id, sync_parent_provider_id, []
 
     # Run all account fetches in parallel
     logger.info("Starting parallel fetch for %d accounts (sync=%s)", len(accounts), sync)
     results = await asyncio.gather(*(fetch_account_files(acc) for acc in accounts))
 
+    # Sync is intentionally sequential and on the request thread to avoid
+    # cross-thread SQLAlchemy Session usage and nested flush/commit collisions.
+    if sync:
+        from app.services import sync_service
+
+        for acc, _target_id, sync_parent_provider_id, files in results:
+            if not files:
+                continue
+            user_id = int(acc.user_id)  # type: ignore[arg-type]
+            sync_service.sync_account_to_db(
+                db, user_id, acc.provider, sync_parent_provider_id, files, str(acc.email)
+            )
+
     # Filter out empty lists and merge
-    all_file_lists = [f for f in results if f]
+    all_file_lists = [f for _, _, _, f in results if f]
     logger.info("Merging %d non-empty file lists", len(all_file_lists))
     return merge_files(all_file_lists)  # type: ignore[arg-type,return-value]
 
@@ -117,9 +127,13 @@ async def list_all_files(
 def inject_metadata(db: Session, user_id: int, files: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Augment file/folder items with persisted metadata, recursive sizes, and watch history."""
 
-    all_ids = []
+    all_ids: list[str] = []
     for f in files:
-        all_ids.extend(f["ids"].values())
+        for value in f["ids"].values():
+            if isinstance(value, list):
+                all_ids.extend(v for v in value if isinstance(v, str))
+            elif isinstance(value, str):
+                all_ids.append(value)
 
     # Fetch relevant metadata for files (thumbnails, dimensions, duration)
     persisted_metadata = {
@@ -152,19 +166,26 @@ def inject_metadata(db: Session, user_id: int, files: list[dict[str, Any]]) -> l
         # Inject cached recursive size if available (for both files and folders)
         found_db_size = False
         total_db_size = 0
-        for _, provider_id in f["ids"].items():
-            if provider_id in persisted_sizes:
-                db_size = persisted_sizes[provider_id]
-                if db_size is not None:
-                    # For folders, we only want to add if we actually have a calculated size (>0)
-                    # or if it's the only provider we have.
-                    if f["type"] == "folder":
-                        total_db_size += db_size
-                        found_db_size = True
-                    elif db_size > 0:
-                        f["size"] = db_size
-                        found_db_size = True
-                        break
+        for _, provider_value in f["ids"].items():
+            provider_ids = provider_value if isinstance(provider_value, list) else [provider_value]
+            for provider_id in provider_ids:
+                if not isinstance(provider_id, str):
+                    continue
+                if provider_id in persisted_sizes:
+                    db_size = persisted_sizes[provider_id]
+                    if db_size is not None:
+                        # For folders, use DB size only when it's positive.
+                        # Zero often means not yet fully synced, so fallback cache should run.
+                        if f["type"] == "folder":
+                            if db_size > 0:
+                                total_db_size += db_size
+                                found_db_size = True
+                        elif db_size > 0:
+                            f["size"] = db_size
+                            found_db_size = True
+                            break
+            if f["type"] == "file" and found_db_size:
+                break
 
         if f["type"] == "folder" and found_db_size:
             f["size"] = total_db_size

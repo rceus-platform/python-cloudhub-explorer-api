@@ -76,16 +76,24 @@ def test_list_files_success(mock_get_creds, mock_get_service, mock_account, mock
     mock_service = MagicMock()
     mock_get_service.return_value = mock_service
 
-    mock_service.files.return_value.list.return_value.execute.return_value = {
-        "files": [
-            {"id": "f1", "name": "file1.mp4", "mimeType": "video/mp4", "size": "100"},
-            {
-                "id": "f2",
-                "name": "folder1",
-                "mimeType": "application/vnd.google-apps.folder",
-            },
-        ]
-    }
+    mock_service.files.return_value.list.return_value.execute.side_effect = [
+        {
+            "files": [
+                {"id": "f1", "name": "file1.mp4", "mimeType": "video/mp4", "size": "100"},
+                {
+                    "id": "f2",
+                    "name": "folder1",
+                    "mimeType": "application/vnd.google-apps.folder",
+                },
+            ]
+        },
+        {
+            "files": [
+                {"id": "c1", "mimeType": "video/mp4", "size": "200"},
+                {"id": "c2", "mimeType": "image/jpeg", "size": "300"},
+            ]
+        },
+    ]
 
     files = gdrive_service.list_files(mock_account, mock_db, "root")
 
@@ -93,7 +101,18 @@ def test_list_files_success(mock_get_creds, mock_get_service, mock_account, mock
     assert files[0]["name"] == "file1.mp4"
     assert files[0]["type"] == "file"
     assert files[1]["type"] == "folder"
+    assert files[1]["size"] == 500
     assert files[0]["id"] == "test@gmail.com:f1"
+
+
+def test_recursive_folder_size_error_returns_zero(mock_account, mock_db):
+    """Test recursive size calculation degrades gracefully on API errors."""
+
+    mock_service = MagicMock()
+    mock_service.files.return_value.list.return_value.execute.side_effect = Exception("API down")
+
+    size = gdrive_service._get_recursive_folder_size(mock_service, "folder123", {})
+    assert size == 0
 
 
 @patch("app.services.gdrive_service.get_drive_service")

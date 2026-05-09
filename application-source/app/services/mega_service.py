@@ -1,6 +1,7 @@
 """Mega Service Module for managing MEGA.nz sessions, file operations, and storage metrics."""
 
 import hashlib
+import json
 import logging
 import os
 import pickle
@@ -85,15 +86,32 @@ def login_to_mega(email: str, password: str):
         return None
 
     _last_login_attempt[email] = now
-    try:
-        mega = Mega()
-        m = mega.login(email, password)  # type: ignore[no-untyped-call]
-        _save_session(email, m)
-        _MEGA_SESSIONS[email] = m
-        return m
-    except Exception:
-        logger.exception("MEGA login failed for %s", email)
-        return None
+    for attempt in range(3):
+        try:
+            mega = Mega()
+            m = mega.login(email, password)  # type: ignore[no-untyped-call]
+            _save_session(email, m)
+            _MEGA_SESSIONS[email] = m
+            return m
+        except json.JSONDecodeError:
+            # Transient non-JSON response from API/proxy edge.
+            if attempt < 2:
+                sleep_for = 1 + attempt
+                logger.warning(
+                    "MEGA login transient response for %s, retrying in %ss (attempt %d/3)",
+                    email,
+                    sleep_for,
+                    attempt + 1,
+                )
+                time.sleep(sleep_for)
+                continue
+            logger.exception("MEGA login failed for %s after retries", email)
+            return None
+        except Exception:
+            logger.exception("MEGA login failed for %s", email)
+            return None
+
+    return None
 
 
 def get_mega_session(email: str, password: str) -> Any:  # type: ignore[no-untyped-def]
@@ -102,20 +120,22 @@ def get_mega_session(email: str, password: str) -> Any:  # type: ignore[no-untyp
     if not email or not password:
         return None
 
-    m = _MEGA_SESSIONS.get(email)
-    if m is not None:
-        return m
+    lock = _get_lock(email)
+    with lock:
+        m = _MEGA_SESSIONS.get(email)
+        if m is not None:
+            return m
 
-    m = _load_session(email)
-    if m is not None:
-        _MEGA_SESSIONS[email] = m
-        return m
+        m = _load_session(email)
+        if m is not None:
+            _MEGA_SESSIONS[email] = m
+            return m
 
-    m = login_to_mega(email, password)
-    if m is None:
-        # Clear any stale disk session that might block future attempts
-        invalidate_session(email)
-    return m
+        m = login_to_mega(email, password)
+        if m is None:
+            # Clear stale disk artifacts only when we have no live session.
+            invalidate_session(email)
+        return m
 
 
 def invalidate_session(email: str) -> None:

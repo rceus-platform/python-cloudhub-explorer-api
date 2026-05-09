@@ -35,6 +35,7 @@ from app.services import file_cache
 from app.services.gdrive_service import get_account_info as get_gdrive_info
 from app.services.mega_service import get_mega_session
 from app.services.mega_service import get_storage_info as get_mega_info
+from app.services.system_sync_service import recalculate_all_folder_sizes
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +156,16 @@ async def get_sync_status():
     from app.services.background_service import ThumbnailSyncManager
 
     return {"status": "running" if ThumbnailSyncManager._is_running else "idle"}
+
+
+@router.post("/recalculate-sizes", response_model=SuccessMessageResponse)
+def recalculate_sizes(
+    db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
+):
+    """Recalculate all cached folder sizes for the authenticated user."""
+    user_id = int(user.id)  # type: ignore[arg-type]
+    recalculate_all_folder_sizes(db, user_id)
+    return {"message": "Folder sizes recalculated successfully"}
 
 
 @router.delete("/{account_id}", response_model=SuccessStatusResponse)

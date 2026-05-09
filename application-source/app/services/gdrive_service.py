@@ -22,7 +22,52 @@ from app.core.config import settings
 from app.db import models
 
 
-def get_valid_credentials(account: models.Account, db: Session) -> Credentials:
+def _get_recursive_folder_size(service, folder_id: str, size_cache: dict[str, int]) -> int:  # type: ignore[no-untyped-def]
+    """Compute recursive byte size for a Google Drive folder."""
+
+    if folder_id in size_cache:
+        return size_cache[folder_id]
+
+    total = 0
+    page_token = None
+    query = f"'{folder_id}' in parents and trashed=false"
+
+    try:
+        while True:
+            results = (
+                service.files()
+                .list(
+                    q=query,
+                    pageSize=1000,
+                    fields="nextPageToken, files(id, mimeType, size)",
+                    pageToken=page_token,
+                )
+                .execute()
+            )
+
+            children = results.get("files", [])
+            for child in children:
+                mime_type = child.get("mimeType", "")
+                child_id = child.get("id")
+                is_folder = "folder" in mime_type
+
+                if is_folder and child_id:
+                    total += _get_recursive_folder_size(service, child_id, size_cache)
+                else:
+                    total += int(child.get("size", 0) or 0)
+
+            page_token = results.get("nextPageToken")
+            if not page_token:
+                break
+    except Exception:
+        # Degrade gracefully for this folder only.
+        return 0
+
+    size_cache[folder_id] = total
+    return total
+
+
+def get_valid_credentials(account: models.Account, db: Session | None) -> Credentials:
     """Retrieve and automatically refresh Google OAuth2 credentials from the database."""
 
     creds = Credentials(
@@ -42,8 +87,9 @@ def get_valid_credentials(account: models.Account, db: Session) -> Credentials:
             account.access_token = creds.token  # type: ignore[attr-defined]
             if creds.expiry:
                 account.expires_at = int(creds.expiry.timestamp())
-            db.commit()
-            db.refresh(account)
+            if db is not None:
+                db.commit()
+                db.refresh(account)
         except Exception:  # type: ignore[misc]
             return None  # type: ignore[return-value]
 
@@ -59,7 +105,7 @@ def get_drive_service(creds: Credentials):  # type: ignore[no-untyped-def]
 
 
 def list_files(
-    account: models.Account, db: Session, folder_id: str = "root"
+    account: models.Account, db: Session | None, folder_id: str = "root"
 ) -> list[dict[str, Any]]:  # type: ignore[no-untyped-def]
     """Fetch files for a specific folder handle from Google Drive."""
 
@@ -89,12 +135,18 @@ def list_files(
         print(f"GDrive API error for {account.email}: {e}")
         files = []
 
+    size_cache: dict[str, int] = {}
+
     return [  # type: ignore[return-value]
         {
             "id": f"{account.email}:{f['id']}",  # type: ignore[index]
             "name": f["name"],  # type: ignore[index]
             "type": "folder" if "folder" in f["mimeType"] else "file",  # type: ignore[index]
-            "size": int(f.get("size", 0)) if f.get("size") else 0,  # type: ignore[union-attr]
+            "size": (
+                _get_recursive_folder_size(service, f["id"], size_cache)  # type: ignore[index]
+                if "folder" in f["mimeType"]  # type: ignore[index]
+                else int(f.get("size", 0)) if f.get("size") else 0
+            ),
             "thumbnail_url": f.get("thumbnailLink"),  # type: ignore[union-attr]
             "provider": "gdrive",
         }

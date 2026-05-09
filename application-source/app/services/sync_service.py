@@ -24,6 +24,7 @@ def sync_account_to_db(
     provider: str,
     parent_provider_id: str | None,
     files: list[dict[str, Any]],
+    account_email: str | None = None,
 ) -> None:
     """Synchronize a single account's files into the DB.
 
@@ -61,15 +62,18 @@ def sync_account_to_db(
     cloud_provider_ids = {f.get("id") or f.get("ids", {}).get(provider) for f in files}
     cloud_provider_ids = {pid for pid in cloud_provider_ids if pid}
 
-    db_items = (
-        db.query(models.FileSystemItem)
-        .filter(
-            models.FileSystemItem.user_id == user_id,
-            models.FileSystemItem.provider == provider,
-            models.FileSystemItem.parent_id == parent_uuid,
-        )
-        .all()
+    db_items_query = db.query(models.FileSystemItem).filter(
+        models.FileSystemItem.user_id == user_id,
+        models.FileSystemItem.provider == provider,
+        models.FileSystemItem.parent_id == parent_uuid,
     )
+
+    if account_email:
+        db_items_query = db_items_query.filter(
+            models.FileSystemItem.provider_id.like(f"{account_email}:%")
+        )
+
+    db_items = db_items_query.all()
     for db_item in db_items:
         if db_item.provider_id not in cloud_provider_ids:
             logger.info("Removing deleted item %s (%s) from DB", db_item.name, db_item.id)

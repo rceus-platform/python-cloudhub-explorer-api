@@ -126,6 +126,15 @@ def test_get_sync_status(client):
     assert response.json()["status"] == "idle"
 
 
+def test_recalculate_sizes(client):
+    """Test manual folder-size recalculation trigger."""
+    with patch("app.api.routes.accounts.recalculate_all_folder_sizes") as mock_recalc:
+        response = client.post("/accounts/recalculate-sizes")
+        assert response.status_code == 200
+        assert response.json() == {"message": "Folder sizes recalculated successfully"}
+        mock_recalc.assert_called_once()
+
+
 def test_google_login(client):
     """Test initiating Google OAuth flow."""
     with patch("google_auth_oauthlib.flow.Flow.from_client_config") as mock_flow:

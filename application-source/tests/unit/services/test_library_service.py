@@ -13,8 +13,10 @@ def mock_accounts():
     """Fixture to provide mock user accounts."""
 
     return [
-        models.Account(email="g1@gmail.com", provider="gdrive", access_token="t1"),
-        models.Account(email="m1@mega.nz", provider="mega", access_token="t2", refresh_token="p2"),
+        models.Account(email="g1@gmail.com", provider="gdrive", access_token="t1", user_id=1),
+        models.Account(
+            email="m1@mega.nz", provider="mega", access_token="t2", refresh_token="p2", user_id=1
+        ),
     ]
 
 
@@ -41,6 +43,70 @@ async def test_list_all_files_parallel(
     assert len(files) == 2
     mock_gdrive_list.assert_called_once()
     mock_mega_list.assert_called_once()
+
+
+@pytest.mark.asyncio
+@patch("app.services.library_service.gdrive_list")
+@patch("app.services.sync_service.sync_account_to_db")
+async def test_list_all_files_sync_runs_sequential_db_sync(
+    mock_sync_account_to_db, mock_gdrive_list, mock_db
+):
+    """Test sync mode performs DB sync after fetch completion."""
+
+    account = models.Account(email="g1@gmail.com", provider="gdrive", access_token="t1", user_id=1)
+    mock_gdrive_list.return_value = [
+        {"name": "file1", "type": "file", "provider": "gdrive", "id": "g1:file1"}
+    ]
+
+    files = await library_service.list_all_files(mock_db, [account], "root", sync=True)
+
+    assert len(files) == 1
+    mock_sync_account_to_db.assert_called_once_with(
+        mock_db,
+        1,
+        "gdrive",
+        "root",
+        [{"name": "file1", "type": "file", "provider": "gdrive", "id": "g1:file1"}],
+        "g1@gmail.com",
+    )
+
+
+@pytest.mark.asyncio
+@patch("app.services.library_service.gdrive_list")
+@patch("app.services.sync_service.sync_account_to_db")
+async def test_list_all_files_sync_uses_prefixed_parent_id_for_nested_folder(
+    mock_sync_account_to_db, mock_gdrive_list, mock_db
+):
+    """Test sync uses account-prefixed provider ID for DB parent resolution."""
+
+    account = models.Account(email="g1@gmail.com", provider="gdrive", access_token="t1", user_id=1)
+    mock_gdrive_list.return_value = [
+        {"name": "child.mp4", "type": "file", "provider": "gdrive", "id": "g1@gmail.com:c1"}
+    ]
+
+    files = await library_service.list_all_files(
+        mock_db,
+        [account],
+        "g1@gmail.com:folder123",
+        sync=True,
+    )
+
+    assert len(files) == 1
+    mock_sync_account_to_db.assert_called_once_with(
+        mock_db,
+        1,
+        "gdrive",
+        "g1@gmail.com:folder123",
+        [
+            {
+                "name": "child.mp4",
+                "type": "file",
+                "provider": "gdrive",
+                "id": "g1@gmail.com:c1",
+            }
+        ],
+        "g1@gmail.com",
+    )
 
 
 @pytest.mark.asyncio
@@ -152,6 +218,54 @@ def test_inject_metadata_no_user(mock_db):
     mock_db._query_results[models.FileMetadata] = []
     enriched = library_service.inject_metadata(mock_db, -1, files)
     assert enriched[0]["is_generating"] is False
+
+
+def test_inject_metadata_folder_uses_cache_when_db_size_zero(mock_db):
+    """Test folder metadata falls back to cache when DB size is zero."""
+    files = [{"name": "Folder A", "type": "folder", "ids": {"gdrive": "fid-folder"}}]
+
+    mock_size_row = MagicMock()
+    mock_size_row.provider_id = "fid-folder"
+    mock_size_row.size = 0
+
+    mock_db._query_results[models.FileMetadata] = []
+    mock_db._query_results[models.FileSystemItem] = [mock_size_row]
+    mock_db._query_results[models.WatchHistory] = []
+
+    with patch("app.services.library_service.calculate_folder_size_from_cache", return_value=987654):
+        enriched = library_service.inject_metadata(mock_db, 1, files)
+
+    assert enriched[0]["size"] == 987654
+
+
+def test_inject_metadata_folder_aggregates_multi_account_provider_ids(mock_db):
+    """Test folder size sums all positive DB sizes for merged provider ID lists."""
+    files = [
+        {
+            "name": "Merged Folder",
+            "type": "folder",
+            "ids": {"gdrive": ["g1-folder", "g2-folder"], "mega": "m1-folder"},
+        }
+    ]
+
+    row1 = MagicMock()
+    row1.provider_id = "g1-folder"
+    row1.size = 100
+
+    row2 = MagicMock()
+    row2.provider_id = "g2-folder"
+    row2.size = 250
+
+    row3 = MagicMock()
+    row3.provider_id = "m1-folder"
+    row3.size = 300
+
+    mock_db._query_results[models.FileMetadata] = []
+    mock_db._query_results[models.FileSystemItem] = [row1, row2, row3]
+    mock_db._query_results[models.WatchHistory] = []
+
+    enriched = library_service.inject_metadata(mock_db, 1, files)
+    assert enriched[0]["size"] == 650
 
 
 def test_save_folder_cache_new(mock_db):
