@@ -129,10 +129,42 @@ def test_get_sync_status(client):
 def test_recalculate_sizes(client):
     """Test manual folder-size recalculation trigger."""
     with patch("app.api.routes.accounts.recalculate_all_folder_sizes") as mock_recalc:
-        response = client.post("/accounts/recalculate-sizes")
-        assert response.status_code == 200
-        assert response.json() == {"message": "Folder sizes recalculated successfully"}
-        mock_recalc.assert_called_once()
+        with patch("app.api.routes.accounts._invalidate_user_file_caches") as mock_invalidate:
+            response = client.post("/accounts/recalculate-sizes")
+            assert response.status_code == 200
+            assert response.json() == {"message": "Folder sizes recalculated successfully"}
+            mock_recalc.assert_called_once()
+            mock_invalidate.assert_called_once()
+
+
+def test_maintenance_recalculate_stats(client):
+    """Test maintenance recalculate endpoint clears user caches."""
+    with patch("app.api.routes.accounts.maintenance_recalculate_stats") as mock_maintenance:
+        with patch("app.api.routes.accounts._invalidate_user_file_caches") as mock_invalidate:
+            mock_maintenance.return_value = {
+                "message": "Folder statistics recalculated successfully",
+                "operation": "recalculate_stats",
+            }
+            response = client.post("/accounts/maintenance/recalculate-stats")
+            assert response.status_code == 200
+            assert response.json()["operation"] == "recalculate_stats"
+            mock_maintenance.assert_called_once()
+            mock_invalidate.assert_called_once()
+
+
+def test_sync_incremental_invalidates_caches(client):
+    """Test incremental sync endpoint clears user caches after success."""
+    with patch("app.api.routes.accounts.incremental_sync") as mock_incremental:
+        with patch("app.api.routes.accounts._invalidate_user_file_caches") as mock_invalidate:
+            mock_incremental.return_value = {
+                "message": "Incremental sync: 1 accounts updated",
+                "total_synced": 1,
+            }
+            response = client.post("/accounts/sync/incremental")
+            assert response.status_code == 200
+            assert response.json()["total_synced"] == 1
+            mock_incremental.assert_called_once()
+            mock_invalidate.assert_called_once()
 
 
 def test_google_login(client):

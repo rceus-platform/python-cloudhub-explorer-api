@@ -14,6 +14,7 @@ import logging
 import uuid
 from typing import Any
 
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.db import models
@@ -29,28 +30,96 @@ logger = logging.getLogger(__name__)
 BATCH_SIZE = 1000
 
 
-async def full_system_sync(user_id: int) -> None:
-    """Run a full recursive synchronization for all linked accounts of a user."""
-    logger.info("Starting full system sync for user %d", user_id)
+def _adjust_folder_and_ancestors_no_commit(db: Session, folder_id: str, delta: int) -> None:
+    """Adjust a folder's size and all its ancestors (including the folder) by delta.
+
+    Used during sync for incremental size update    s without immediate commit.
+    """
+    if delta == 0:
+        return
+
+    current_id = folder_id
+    while current_id:
+        folder = (
+            db.query(models.FileSystemItem).filter(models.FileSystemItem.id == current_id).first()
+        )
+        if not folder:
+            break
+        folder.size = max(0, (folder.size or 0) + delta)
+        current_id = folder.parent_id
+    # No commit - caller handles transaction commit at batch boundaries
+
+
+async def full_system_sync(user_id: int) -> dict[str, Any]:
+    """Run a full recursive synchronization for all linked accounts with rate limiting.
+
+    This is the "deep sync" - expensive and limited to once per 6 hours per account.
+    """
+    logger.info("Starting full system sync (deep) for user %d", user_id)
+    synced = []
+    skipped = []
+
     try:
         with SessionLocal() as db:
             accounts = account_service.get_user_accounts(db, user_id)
+            now = datetime.datetime.now(datetime.timezone.utc)
 
             for account in accounts:
                 try:
+                    # Check rate limit: skip if synced within last 6 hours
+                    if (
+                        account.last_full_sync
+                        and (now - account.last_full_sync).total_seconds() < 6 * 3600
+                    ):
+                        logger.info(
+                            "Skipping deep sync for %s: rate limited (last sync: %s)",
+                            account.email,
+                            account.last_full_sync,
+                        )
+                        skipped.append(
+                            {
+                                "email": account.email,
+                                "provider": account.provider,
+                                "reason": "rate_limited",
+                                "retry_after_seconds": 6 * 3600,
+                            }
+                        )
+                        continue
+
                     await _sync_account(db, user_id, account)
+
+                    # Update last_full_sync timestamp
+                    account.last_full_sync = now
+                    db.commit()
+
+                    synced.append({"email": account.email, "provider": account.provider})
+                    logger.info("Deep sync completed for %s", account.email)
                 except Exception:
                     logger.exception(
                         "Error syncing account %s (%s)", account.email, account.provider
                     )
+                    db.rollback()  # Reset session before continuing with next account
+                    skipped.append(
+                        {"email": account.email, "provider": account.provider, "reason": "error"}
+                    )
 
-            # Recalculate all folder sizes bottom-up after all accounts are synced
-            logger.info("Recalculating folder sizes for user %d...", user_id)
-            _recalculate_all_folder_sizes(db, user_id)
-            logger.info("Full system sync completed for user %d", user_id)
+            logger.info(
+                "Deep sync summary for user %d: %d synced, %d skipped",
+                user_id,
+                len(synced),
+                len(skipped),
+            )
+            return {
+                "message": f"Deep sync completed: {len(synced)} synced, {len(skipped)} skipped",
+                "synced_accounts": synced,
+                "skipped_accounts": skipped,
+                "total_synced": len(synced),
+                "total_skipped": len(skipped),
+            }
 
-    except Exception:
-        logger.exception("Global error during full system sync for user %d", user_id)
+    except Exception as e:
+        logger.exception("Global error during full system sync for user %d: %s", user_id, e)
+        raise
 
 
 async def _sync_account(db: Session, user_id: int, account: models.Account) -> None:
@@ -104,12 +173,16 @@ async def _sync_account(db: Session, user_id: int, account: models.Account) -> N
         existing_item = existing_map.get(pid)
 
         if existing_item:
-            # Update
+            # Track old size and parent for unified delta propagation
+            old_size = existing_item.size or 0
+            old_parent_id = existing_item.parent_id
+
+            # Update item attributes
             existing_item.name = node["name"]
             existing_item.parent_id = parent_local_id
             existing_item.is_folder = node["is_folder"]
             existing_item.mime_type = node.get("mime_type")
-            existing_item.size = node.get("size", 0)
+            existing_item.size = new_size = node.get("size", 0)
             existing_item.extension = node.get("extension")
             existing_item.extra_metadata = node.get("extra_metadata")
 
@@ -118,6 +191,17 @@ async def _sync_account(db: Session, user_id: int, account: models.Account) -> N
                 existing_item.created_at = node["created_at"]
             if node.get("updated_at"):
                 existing_item.updated_at = node["updated_at"]
+
+            # Unified size adjustment: subtract old_size from old parent chain,
+            # add new_size to new parent chain
+
+            # This handles both size changes (same parent, old!=new) and moves (different parent)
+            new_parent_id = parent_local_id
+            if old_parent_id != new_parent_id or old_size != new_size:
+                if old_parent_id:
+                    _adjust_folder_and_ancestors_no_commit(db, old_parent_id, -old_size)
+                if new_parent_id:
+                    _adjust_folder_and_ancestors_no_commit(db, new_parent_id, new_size)
         else:
             # Insert
             new_item = models.FileSystemItem(
@@ -132,10 +216,16 @@ async def _sync_account(db: Session, user_id: int, account: models.Account) -> N
                 size=node.get("size", 0),
                 extension=node.get("extension"),
                 extra_metadata=node.get("extra_metadata"),
-                created_at=node.get("created_at") or datetime.datetime.utcnow(),
-                updated_at=node.get("updated_at") or datetime.datetime.utcnow(),
+                created_at=node.get("created_at") or datetime.datetime.now(datetime.timezone.utc),
+                updated_at=node.get("updated_at") or datetime.datetime.now(datetime.timezone.utc),
             )
             db.add(new_item)
+            db.flush()  # Ensure ID is available before propagation
+
+            # Propagate size increment for new items: add to parent chain
+            item_size = new_item.size or 0
+            if item_size > 0 and new_item.parent_id:
+                _adjust_folder_and_ancestors_no_commit(db, new_item.parent_id, item_size)
 
         # Check if it's a media file for thumbnail generation
         if not node["is_folder"]:
@@ -155,10 +245,19 @@ async def _sync_account(db: Session, user_id: int, account: models.Account) -> N
     if batch_count > 0:
         db.commit()
 
-    # 5. Cleanup stale entries
+    # 5. Cleanup stale entries with delta tracking
     stale_items = [item for item in existing_items if item.provider_id not in seen_provider_ids]
     if stale_items:
         logger.info("Cleaning up %d stale items for %s", len(stale_items), account.provider)
+
+        # Aggregate size deltas per parent before deletion
+        parent_size_deltas: dict[str | None, int] = {}
+        for item in stale_items:
+            pid = item.parent_id
+            size = item.size or 0
+            if pid:
+                parent_size_deltas[pid] = parent_size_deltas.get(pid, 0) - size
+
         # Delete in batches to prevent locking issues
         for i in range(0, len(stale_items), BATCH_SIZE):
             batch_stale = stale_items[i : i + BATCH_SIZE]
@@ -167,12 +266,29 @@ async def _sync_account(db: Session, user_id: int, account: models.Account) -> N
             db.commit()
             await asyncio.sleep(0.01)
 
+        # Apply negative deltas to parent folders (non-committing, then commit)
+        for parent_id, delta in parent_size_deltas.items():
+            if parent_id and delta != 0:
+                _adjust_folder_and_ancestors_no_commit(db, parent_id, delta)
+        db.commit()  # Commit parent size updates after applying all deltas
+
     # 6. Enqueue thumbnails
     if media_to_enqueue:
-        logger.info("Enqueuing %d media files for thumbnail generation", len(media_to_enqueue))
+        enqueued = 0
+        skipped = 0
         # Using a background priority of 2 for sync-discovered files
         for media_file in media_to_enqueue:
-            await ThumbnailSyncManager.enqueue_thumbnail(user_id, "background", media_file)
+            if await ThumbnailSyncManager.enqueue_thumbnail(user_id, "background", media_file):
+                enqueued += 1
+            else:
+                skipped += 1
+
+        logger.info(
+            "Thumbnail enqueue summary during sync: candidates=%d enqueued=%d skipped=%d",
+            len(media_to_enqueue),
+            enqueued,
+            skipped,
+        )
 
 
 def _fetch_gdrive_nodes(account: models.Account, db: Session) -> list[dict[str, Any]]:
@@ -218,14 +334,14 @@ def _fetch_gdrive_nodes(account: models.Account, db: Session) -> list[dict[str, 
                         # e.g., '2023-01-01T12:00:00.000Z'
                         created_at = datetime.datetime.strptime(
                             f["createdTime"], "%Y-%m-%dT%H:%M:%S.%fZ"
-                        )
+                        ).replace(tzinfo=datetime.timezone.utc)
                     except ValueError:
                         pass
                 if f.get("modifiedTime"):
                     try:
                         updated_at = datetime.datetime.strptime(
                             f["modifiedTime"], "%Y-%m-%dT%H:%M:%S.%fZ"
-                        )
+                        ).replace(tzinfo=datetime.timezone.utc)
                     except ValueError:
                         pass
 
@@ -305,7 +421,7 @@ def _fetch_mega_nodes(account: models.Account) -> list[dict[str, Any]]:
         created_at = None
         if data.get("ts"):
             try:
-                created_at = datetime.datetime.utcfromtimestamp(data["ts"])
+                created_at = datetime.datetime.fromtimestamp(data["ts"], datetime.timezone.utc)
             except Exception:
                 pass
 
@@ -360,23 +476,26 @@ def _recalculate_all_folder_sizes(db: Session, user_id: int) -> None:
         )
 
         sizes = {}
+        is_folder_map = {}
         children_map = {}
 
         for item in items:
             sizes[item.id] = item.size or 0
+            is_folder_map[item.id] = item.is_folder
             if item.parent_id:
                 if item.parent_id not in children_map:
                     children_map[item.parent_id] = []
                 children_map[item.parent_id].append(item.id)
 
         # Bottom-up calculation via post-order traversal using memoization
-        calculated_folder_sizes = {}
+        calculated_folder_sizes: dict[str, int] = {}
 
-        def get_size(item_id):
+        def get_size(item_id: str) -> int:
             if item_id in calculated_folder_sizes:
                 return calculated_folder_sizes[item_id]
 
-            total = sizes.get(item_id, 0)
+            # Only include file sizes; folders only sum their children
+            total = 0 if is_folder_map.get(item_id, False) else sizes.get(item_id, 0)
             if item_id in children_map:
                 for child_id in children_map[item_id]:
                     total += get_size(child_id)
@@ -411,3 +530,152 @@ def recalculate_all_folder_sizes(db: Session, user_id: int) -> None:
     """Public wrapper to recalculate all folder sizes for a user."""
     logger.info("Manual folder size recalculation requested for user %d", user_id)
     _recalculate_all_folder_sizes(db, user_id)
+
+
+# ---------------------------------------------------------------------------
+# Public Service API - New Granular Sync & Maintenance Functions
+# ---------------------------------------------------------------------------
+
+
+async def incremental_sync(user_id: int, account_id: int | None = None) -> dict[str, Any]:
+    """Perform an incremental sync - update only changed items with delta propagation.
+
+    This is lightweight and suitable for frequent use (e.g., folder refresh).
+
+    Args:
+        user_id: User performing the sync
+        account_id: Optional specific account to sync; if None, syncs all accounts
+    """
+    logger.info(
+        "Starting incremental sync for user %d (account_id=%s)", user_id, account_id or "all"
+    )
+    synced = []
+    skipped = []
+
+    try:
+        with SessionLocal() as db:
+            if account_id:
+                account = (
+                    db.query(models.Account)
+                    .filter(models.Account.id == account_id, models.Account.user_id == user_id)
+                    .first()
+                )
+                if not account:
+                    raise HTTPException(status_code=404, detail="Account not found")
+                accounts = [account]
+            else:
+                accounts = account_service.get_user_accounts(db, user_id)
+
+            for account in accounts:
+                try:
+                    await _sync_account(db, user_id, account)
+                    synced.append({"email": account.email, "provider": account.provider})
+                    logger.info("Incremental sync completed for %s", account.email)
+                except Exception as e:
+                    logger.exception("Error in incremental sync for %s: %s", account.email, e)
+                    db.rollback()  # Reset session for next account
+                    skipped.append(
+                        {"email": account.email, "provider": account.provider, "error": str(e)}
+                    )
+
+            return {
+                "message": f"Incremental sync: {len(synced)} accounts updated",
+                "synced_accounts": synced,
+                "skipped_accounts": skipped,
+                "total_synced": len(synced),
+            }
+    except Exception as e:
+        logger.exception("Incremental sync failed for user %d: %s", user_id, e)
+        raise
+
+
+async def deep_sync(user_id: int, account_id: int | None = None) -> dict[str, Any]:
+    """Perform a full deep sync with rate limiting (6 hours per account).
+
+    Args:
+        user_id: User performing the sync
+        account_id: Optional specific account to sync; if None, syncs all non-rate-limited accounts
+
+    Returns:
+        dict with sync results and rate limit info
+    """
+    logger.info("Starting deep sync for user %d (account_id=%s)", user_id, account_id or "all")
+    return await full_system_sync(user_id)  # full_system_sync already handles rate limiting
+
+
+def maintenance_recalculate_stats(db: Session, user_id: int) -> dict[str, Any]:
+    """Recalculate all folder sizes bottom-up - one-time recovery/repair operation."""
+    logger.info("Maintenance: Recalculating statistics for user %d", user_id)
+    try:
+        recalculate_all_folder_sizes(db, user_id)
+        return {
+            "message": "Folder statistics recalculated successfully",
+            "operation": "recalculate_stats",
+        }
+    except Exception as e:
+        logger.exception("Maintenance recalc failed for user %d: %s", user_id, e)
+        raise
+
+
+async def maintenance_repair_thumbnails(user_id: int) -> dict[str, Any]:
+    """Re-enqueue all media files (images/videos) for thumbnail regeneration.
+
+    Useful when thumbnails are missing or corrupted system-wide.
+    """
+    logger.info("Maintenance: Repairing thumbnails for user %d", user_id)
+    try:
+        with SessionLocal() as db:
+            # Fetch all non-folder items with common media extensions
+            media_extensions = (
+                ".mp4",
+                ".mkv",
+                ".mov",
+                ".avi",
+                ".wmv",
+                ".flv",
+                ".webm",
+                ".jpg",
+                ".jpeg",
+                ".png",
+                ".webp",
+                ".heic",
+                ".gif",
+                ".bmp",
+            )
+
+            # Query all file items for the user
+            items = (
+                db.query(models.FileSystemItem)
+                .filter(
+                    models.FileSystemItem.user_id == user_id,
+                    models.FileSystemItem.is_folder.is_(False),
+                )
+                .all()
+            )
+
+            queued = 0
+            for item in items:
+                if not item.extension:
+                    continue
+                ext = f".{item.extension.lower()}"
+                if ext not in media_extensions:
+                    continue
+
+                # Build file_info dict in the format expected by ThumbnailSyncManager
+                provider = item.provider
+                file_id = item.provider_id or item.id
+
+                file_info = {"ids": {provider: file_id}, "name": item.name, "type": "file"}
+
+                await ThumbnailSyncManager.enqueue_thumbnail(user_id, "maintenance", file_info)
+                queued += 1
+
+            logger.info("Repair thumbnails: enqueued %d media files for user %d", queued, user_id)
+            return {
+                "message": f"Thumbnail repair enqueued {queued} media files",
+                "queued_files": queued,
+                "operation": "repair_thumbnails",
+            }
+    except Exception as e:
+        logger.exception("Maintenance thumbnail repair failed for user %d: %s", user_id, e)
+        raise

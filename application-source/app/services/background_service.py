@@ -8,6 +8,7 @@ Responsibilities:
 import asyncio
 import logging
 import os
+import time
 
 from app.core.config import settings
 from app.db.session import SessionLocal
@@ -39,6 +40,9 @@ class ThumbnailSyncManager:
     _is_running: bool = False
     _task_counter: int = 0
     _queued_ids: set[str] = set()
+    _last_enqueued_at: dict[str, float] = {}
+    _enqueue_cooldown_seconds: int = 300
+    _max_enqueue_per_folder_fetch: int = 200
 
     @classmethod
     def get_queue(cls) -> asyncio.PriorityQueue[tuple[int, int, int, str, dict]]:
@@ -71,29 +75,59 @@ class ThumbnailSyncManager:
         cls, user_id: int, folder_id: str, files: list[dict]
     ) -> None:
         """Enqueue all media files in a folder that are missing thumbnails."""
+        enqueued = 0
+        skipped = 0
         for f in files:
-            # We don't check for updated_at here anymore;
-            # enqueue_thumbnail will handle the check against the actual disk cache.
-            if f.get("type") == "file":
-                await cls.enqueue_thumbnail(user_id, folder_id, f)
+            if enqueued >= cls._max_enqueue_per_folder_fetch:
+                skipped += 1
+                continue
+
+            if f.get("type") != "file":
+                continue
+
+            media_type = get_media_type(str(f.get("name", "")))
+            if not (media_type.startswith("image/") or media_type.startswith("video/")):
+                continue
+
+            if f.get("updated_at") and not f.get("is_generating"):
+                skipped += 1
+                continue
+
+            if await cls.enqueue_thumbnail(user_id, folder_id, f):
+                enqueued += 1
+            else:
+                skipped += 1
+
+        logger.info(
+            "Thumbnail enqueue summary for user %d folder %s: enqueued=%d skipped=%d",
+            user_id,
+            folder_id,
+            enqueued,
+            skipped,
+        )
 
     @classmethod
-    async def enqueue_thumbnail(cls, user_id: int, folder_id: str, file_info: dict) -> None:
+    async def enqueue_thumbnail(cls, user_id: int, folder_id: str, file_info: dict) -> bool:
         """Add a single file to the generation queue if not already present."""
         ids = file_info.get("ids", {})
         if not ids:
-            return
+            return False
 
         provider = next(iter(ids.keys()))
         file_id = ids[provider]
 
         if file_id in cls._in_progress or file_id in cls._queued_ids:
-            return
+            return False
+
+        now = time.monotonic()
+        last_enqueued = cls._last_enqueued_at.get(file_id)
+        if last_enqueued is not None and (now - last_enqueued) < cls._enqueue_cooldown_seconds:
+            return False
 
         # Check if already exists in cache to avoid redundant queuing
         cache_path = thumbnail_service.get_cache_path(file_id)
         if os.path.exists(cache_path):
-            return
+            return False
 
         # Priority 0: On-demand (root), Priority 1: Active folder, Priority 2: Background/Inactive
         if folder_id == "root":
@@ -106,10 +140,10 @@ class ThumbnailSyncManager:
         # Use a counter to avoid comparing file_info dicts and ensure FIFO for same priority
         cls._task_counter += 1
         cls._queued_ids.add(file_id)
+        cls._last_enqueued_at[file_id] = now
         await cls.get_queue().put((priority, cls._task_counter, user_id, folder_id, file_info))
-        logger.info(
-            "Enqueued thumbnail task for: %s (Priority: %d)", file_info.get("name"), priority
-        )
+        logger.debug("Enqueued thumbnail task for: %s (Priority: %d)", file_info.get("name"), priority)
+        return True
 
     @classmethod
     async def start_worker(cls) -> None:

@@ -220,8 +220,8 @@ def test_inject_metadata_no_user(mock_db):
     assert enriched[0]["is_generating"] is False
 
 
-def test_inject_metadata_folder_uses_cache_when_db_size_zero(mock_db):
-    """Test folder metadata falls back to cache when DB size is zero."""
+def test_inject_metadata_folder_uses_db_size_when_zero(mock_db):
+    """Test folder metadata uses persisted DB size even when it is zero."""
     files = [{"name": "Folder A", "type": "folder", "ids": {"gdrive": "fid-folder"}}]
 
     mock_size_row = MagicMock()
@@ -232,10 +232,11 @@ def test_inject_metadata_folder_uses_cache_when_db_size_zero(mock_db):
     mock_db._query_results[models.FileSystemItem] = [mock_size_row]
     mock_db._query_results[models.WatchHistory] = []
 
-    with patch("app.services.library_service.calculate_folder_size_from_cache", return_value=987654):
+    with patch("app.services.library_service.calculate_folder_size_from_cache") as mock_cache:
         enriched = library_service.inject_metadata(mock_db, 1, files)
 
-    assert enriched[0]["size"] == 987654
+    assert enriched[0]["size"] == 0
+    mock_cache.assert_not_called()
 
 
 def test_inject_metadata_folder_aggregates_multi_account_provider_ids(mock_db):

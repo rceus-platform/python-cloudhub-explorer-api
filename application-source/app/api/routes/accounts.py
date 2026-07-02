@@ -13,6 +13,7 @@ Boundaries:
 import asyncio
 import logging
 import os
+from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -35,11 +36,26 @@ from app.services import file_cache
 from app.services.gdrive_service import get_account_info as get_gdrive_info
 from app.services.mega_service import get_mega_session
 from app.services.mega_service import get_storage_info as get_mega_info
-from app.services.system_sync_service import recalculate_all_folder_sizes
+from app.services.system_sync_service import (
+    deep_sync,
+    incremental_sync,
+    maintenance_recalculate_stats,
+    maintenance_repair_thumbnails,
+    recalculate_all_folder_sizes,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _invalidate_user_file_caches(db: Session, user_id: int) -> None:
+    """Clear in-memory and persistent folder caches for a user."""
+    file_cache.invalidate_all(user_id)
+    db.query(models.FolderCache).filter(models.FolderCache.user_id == user_id).delete(
+        synchronize_session=False
+    )
+    db.commit()
 
 
 @router.get("/", response_model=list[AccountResponse])
@@ -159,13 +175,95 @@ async def get_sync_status():
 
 
 @router.post("/recalculate-sizes", response_model=SuccessMessageResponse)
-def recalculate_sizes(
-    db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
-):
+def recalculate_sizes(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     """Recalculate all cached folder sizes for the authenticated user."""
     user_id = int(user.id)  # type: ignore[arg-type]
     recalculate_all_folder_sizes(db, user_id)
+    _invalidate_user_file_caches(db, user_id)
     return {"message": "Folder sizes recalculated successfully"}
+
+
+# ---------------------------------------------------------------------------
+# Granular Sync Endpoints (New)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/sync/incremental")
+async def sync_incremental(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Lightweight incremental sync - updates only changed items since last sync.
+
+    This is safe to call frequently (e.g., on folder refresh).
+    Propagates size deltas incrementally without full recalc.
+    """
+    user_id = int(user.id)  # type: ignore[arg-type]
+    result = await incremental_sync(user_id)
+    _invalidate_user_file_caches(db, user_id)
+    return result
+
+
+@router.post("/sync/deep")
+async def sync_deep(
+    user: models.User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Full deep sync with rate limiting (once per 6 hours per account).
+
+    Scans all cloud providers and rebuilds the file tree from scratch.
+    Rate-limited to prevent excessive API calls to cloud providers.
+    """
+    user_id = int(user.id)  # type: ignore[arg-type]
+    result = await deep_sync(user_id)
+
+    # Check if all accounts were rate-limited
+    if result.get("total_synced", 0) == 0 and result.get("total_skipped", 0) > 0:
+        # All accounts rate-limited → return 429 with retry header
+        retry_after = 6 * 3600  # 6 hours in seconds
+        raise HTTPException(
+            status_code=429,
+            detail="Deep sync rate limited. All accounts synced recently.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Maintenance Endpoints (New)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/maintenance/recalculate-stats")
+def maintenance_recalc(
+    db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
+) -> dict[str, Any]:
+    """One-time maintenance: recalculate all folder sizes bottom-up.
+
+    Use this if folder sizes appear incorrect or after data migration.
+    """
+    user_id = int(user.id)  # type: ignore[arg-type]
+    result = maintenance_recalculate_stats(db, user_id)
+    _invalidate_user_file_caches(db, user_id)
+    return result
+
+
+@router.post("/maintenance/repair-thumbnails")
+async def maintenance_repair(
+    user: models.User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Re-enqueue all media files for thumbnail generation.
+
+    Useful when thumbnails are missing or corrupted system-wide.
+    """
+    user_id = int(user.id)  # type: ignore[arg-type]
+    result = await maintenance_repair_thumbnails(user_id)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Existing Endpoints
+# ---------------------------------------------------------------------------
 
 
 @router.delete("/{account_id}", response_model=SuccessStatusResponse)

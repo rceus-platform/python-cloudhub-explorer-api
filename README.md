@@ -1,5 +1,9 @@
 # CloudHub Explorer API
 
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/release/python-3110/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-00a393.svg)](https://fastapi.tiangolo.com)
+[![uv](https://img.shields.io/badge/uv-fast-ff0000.svg)](https://github.com/astral-sh/uv)
+
 ## Overview
 
 The **CloudHub Explorer API** is a high-performance, unified backend service designed to orchestrate file management across multiple cloud storage providers. Built with **FastAPI** and **Python 3.11**, it provides a centralized interface for browsing, searching, and streaming media from services like **Google Drive** and **MEGA**.
@@ -8,56 +12,21 @@ This API serves as the backbone for the [CloudHub Explorer UI](https://github.co
 
 ## Key Features
 
-### 🌐 Unified Cloud Integration
-- **Multi-Provider Support**: Seamlessly browse files from Google Drive and MEGA in a single consolidated view.
+- **Unified Cloud Integration**: Seamlessly browse files from Google Drive and MEGA in a single consolidated view.
 - **Folder Merging**: Advanced logic to merge directory structures from different providers into a unified virtual filesystem.
-
-### 👥 Multi-Account Management
-- **Parallel Connections**: Connect multiple accounts per provider (e.g., 5+ MEGA accounts, 10+ Google Drive accounts) simultaneously.
+- **Multi-Account Management**: Connect multiple accounts per provider (e.g., 5+ MEGA accounts, 10+ Google Drive accounts) simultaneously.
 - **OAuth & Credential Management**: Secure handling of Google OAuth2 flows and MEGA session persistence.
-
-### 🎬 Media Streaming Engine
-- **Range-Request Support**: High-performance streaming for large video files, allowing instant seeking and smooth playback.
-- **Node.js Sidecar Integration**: Leverages a specialized Node.js service for high-speed MEGA file streaming.
-
-### 🚀 Node.js Sidecar Integration
-The CloudHub Explorer API utilizes a specialized Node.js sidecar for high-performance streaming, particularly for providers like MEGA where Python-based streaming can be bottlenecked by CPU-intensive decryption.
-
-#### Prerequisites
-- **Node.js**: Version 16 or higher is required.
-
-#### Installation
-1. Navigate to the sidecar directory (typically in a sibling repo or designated folder):
-   ```bash
-   git clone https://github.com/rceus-platform/node-mega-stream-service
-   cd node-mega-stream-service
-   npm install
-   ```
-2. Build the service (if applicable):
-   ```bash
-   npm run build
-   ```
-
-#### Configuration
-Required environment variables for the sidecar:
-- `SIDE_CAR_PORT`: Port the sidecar listens on (default: `4000`)
-- `SIDE_CAR_HOST`: Host for the sidecar (default: `localhost`)
-
-#### Startup
-Launch the sidecar alongside the Python API:
-```bash
-# Start the sidecar
-npm start
-
-# Or using node directly
-node ./dist/index.js
-```
-
-For production, it is recommended to run the sidecar via `systemd` or as a service in `docker-compose`.
-
-### 🛡️ Security & Performance
-- **Passcode Protection**: Unified access control layer via `SITE_PASSCODE`.
+- **Media Streaming Engine**: High-performance streaming for large video files, allowing instant seeking and smooth playback via range-request support.
 - **Database Caching**: Persistent metadata caching using SQLAlchemy and SQLite for lightning-fast file lookups.
+- **Security**: Unified access control layer via a secure site passcode.
+
+## System Architecture
+
+The application is structured to ensure high performance and maintainability:
+
+- **FastAPI Backend**: Handles routing, authentication, multi-account orchestration, and API logic.
+- **Node.js Sidecar Integration**: Utilizes a specialized Node.js sidecar ([node-mega-stream-service](https://github.com/rceus-platform/node-mega-stream-service)) for high-performance streaming, bypassing Python CPU bottlenecks during decryption (e.g., MEGA streaming).
+- **SQLite + SQLAlchemy**: Relational database for storing metadata and caching file structures.
 
 ## Tech Stack
 
@@ -66,7 +35,91 @@ For production, it is recommended to run the sidecar via `systemd` or as a servi
 - **Package Manager**: [uv](https://github.com/astral-sh/uv)
 - **Database**: SQLite with [SQLAlchemy 2.0](https://www.sqlalchemy.org/)
 - **Validation**: [Pydantic v2](https://docs.pydantic.dev/)
+- **Migrations**: [Alembic](https://alembic.sqlalchemy.org/)
 - **Cloud SDKs**: `google-api-python-client`, `mega.py`
+
+## Getting Started
+
+### Prerequisites
+
+- **Python**: 3.11 or higher
+- **uv**: Astral's high-speed Python package manager (`pip install uv`)
+- **Node.js**: v16+ (Required for the streaming sidecar)
+
+### Installation
+
+1. **Clone the repository:**
+
+   ```bash
+   git clone <repository_url>
+   cd python-cloudhub-explorer-api/application-source
+   ```
+
+2. **Sync dependencies:**
+   ```bash
+   uv sync
+   ```
+
+### Configuration
+
+Create a `.env` file in the `application-source` directory based on the provided `.env.example` template (do not commit this file to version control).
+
+```env
+# Security
+SITE_PASSCODE=your_secure_passcode_here
+
+# Google Drive OAuth (Requires GCP Console setup)
+GOOGLE_CLIENT_ID=your_google_client_id_here
+GOOGLE_CLIENT_SECRET=your_google_client_secret_here
+
+# Optional: Default MEGA credentials for environment-based login
+MEGA_USERNAME=your_mega_email@example.com
+MEGA_PASSWORD=your_secure_mega_password_here
+
+# Sidecar Configuration
+SIDE_CAR_HOST=localhost
+SIDE_CAR_PORT=4000
+```
+
+_Note: Ensure `.env` is listed in your `.gitignore` to prevent leaking sensitive credentials._
+
+### Database Migrations (Alembic)
+
+The project uses Alembic for database schema versioning. Before starting the API in any environment, ensure the database is up-to-date:
+
+```bash
+cd application-source
+uv run alembic upgrade head
+```
+
+To create a new migration after making changes to the SQLAlchemy models:
+
+```bash
+uv run alembic revision --autogenerate -m "describe_your_changes"
+```
+
+### Running the Services
+
+For local development, you need to run both the Node.js sidecar and the Python API.
+
+1. **Start the Node.js Sidecar:**
+
+   ```bash
+   # Clone and setup the sidecar repository
+   git clone https://github.com/rceus-platform/node-mega-stream-service
+   cd node-mega-stream-service
+   npm install
+   npm run build
+   npm start
+   ```
+
+2. **Start the FastAPI Backend:**
+   ```bash
+   cd python-cloudhub-explorer-api/application-source
+   uv run uvicorn app.main:app --reload --port 8000
+   ```
+
+The API documentation (Swagger UI) will be available at `http://localhost:8000/docs`.
 
 ## Project Structure
 
@@ -84,83 +137,16 @@ application-source/
 └── uv.lock           # Deterministic dependency lockfile
 ```
 
-## Getting Started
-
-### Prerequisites
-
-- **Python**: 3.11 or higher
-- **uv**: Astral's high-speed Python package manager
-
-### Installation
-
-1. Clone the repository and navigate to the application directory:
-   ```bash
-   cd python-cloudhub-explorer-api/application-source
-   ```
-
-2. Sync dependencies using `uv`:
-   ```bash
-   uv sync
-   ```
-
-### Configuration
-
-Create a `.env` file in the `application-source` directory:
-
-```env
-SITE_PASSCODE=8080
-GOOGLE_CLIENT_ID=your_client_id
-GOOGLE_CLIENT_SECRET=your_client_secret
-
-# Optional: Default MEGA credentials for environment-based login
-MEGA_USERNAME=your_mega_email
-MEGA_PASSWORD=your_mega_password
-```
-
-### Running the API
-
-Start the development server with hot-reload:
-
-```bash
-uv run uvicorn app.main:app --reload --port 8000
-```
-
-### Database Migrations (Alembic)
-
-This project now uses Alembic for schema upgrades.
-
-Run migrations before starting the API in any deployed environment:
-
-```bash
-cd python-cloudhub-explorer-api/application-source
-uv run alembic upgrade head
-```
-
-Check migration state:
-
-```bash
-uv run alembic current
-uv run alembic history --verbose
-```
-
-Create a new migration after model changes:
-
-```bash
-uv run alembic revision --autogenerate -m "describe change"
-```
-
-The API documentation (Swagger UI) will be available at `http://localhost:8000/docs`.
-
 ## API Endpoints
 
-| Category | Endpoint | Description |
-|----------|----------|-------------|
-| **Auth** | `POST /auth/login` | Authenticate and retrieve session tokens |
-| **Accounts** | `GET /accounts/google/login` | Initiate Google OAuth flow |
-| **Accounts** | `POST /accounts/mega/login` | Connect a new MEGA account |
-| **Files** | `GET /files/` | List files from all connected accounts |
-| **Files** | `GET /files/stream` | Stream file content with range support |
+| Category     | Endpoint                     | Description                              |
+| ------------ | ---------------------------- | ---------------------------------------- |
+| **Auth**     | `POST /auth/login`           | Authenticate and retrieve session tokens |
+| **Accounts** | `GET /accounts/google/login` | Initiate Google OAuth flow               |
+| **Accounts** | `POST /accounts/mega/login`  | Connect a new MEGA account               |
+| **Files**    | `GET /files/`                | List files from all connected accounts   |
+| **Files**    | `GET /files/stream`          | Stream file content with range support   |
 
 ---
 
-Built with precision for the modern cloud explorer.
+_Built with precision for the modern cloud explorer._

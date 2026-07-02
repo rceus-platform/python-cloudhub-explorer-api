@@ -174,13 +174,10 @@ def inject_metadata(db: Session, user_id: int, files: list[dict[str, Any]]) -> l
                 if provider_id in persisted_sizes:
                     db_size = persisted_sizes[provider_id]
                     if db_size is not None:
-                        # For folders, use DB size only when it's positive.
-                        # Zero often means not yet fully synced, so fallback cache should run.
                         if f["type"] == "folder":
-                            if db_size > 0:
-                                total_db_size += db_size
-                                found_db_size = True
-                        elif db_size > 0:
+                            total_db_size += db_size
+                            found_db_size = True
+                        else:
                             f["size"] = db_size
                             found_db_size = True
                             break
