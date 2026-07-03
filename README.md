@@ -149,4 +149,4 @@ application-source/
 
 ---
 
-_Built with precision for the modern cloud explorer._
+**Built with precision for the modern cloud explorer.**
