@@ -11,6 +11,5 @@
   "python.analysis.autoSearchPaths": true,
   "python.analysis.venvPath": "${workspaceFolder}/application-source",
   "python.analysis.venv": ".venv",
-  "snyk.advanced.organization": "48320d3a-2c35-4e33-a1a2-d3c24261916f",
   "snyk.advanced.autoSelectOrganization": true
 }
