@@ -140,12 +140,26 @@ echo "  ✅ .env written with $(wc -l < "$ENV_FILE") variable(s)"
 # ================================
 echo "🔐 Checking SSL certificates"
 SSL_DIR="/etc/nginx/ssl"
-if [ ! -f "$SSL_DIR/self.crt" ]; then
-  echo "🎁 Generating self-signed certificate"
-  sudo mkdir -p "$SSL_DIR"
-  sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-    -keyout "$SSL_DIR/self.key" -out "$SSL_DIR/self.crt" \
-    -subj "/C=US/ST=State/L=City/O=Organization/CN=${DOMAIN}"
+USE_LETSENCRYPT=false
+
+if [ -f "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" ]; then
+  echo "✅ Found Let's Encrypt certificate for ${DOMAIN}"
+  SSL_CERT="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
+  SSL_KEY="/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
+else
+  if [ ! -f "$SSL_DIR/self.crt" ]; then
+    echo "🎁 Generating self-signed certificate"
+    sudo mkdir -p "$SSL_DIR"
+    sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+      -keyout "$SSL_DIR/self.key" -out "$SSL_DIR/self.crt" \
+      -subj "/C=US/ST=State/L=City/O=Organization/CN=${DOMAIN}"
+  fi
+  SSL_CERT="$SSL_DIR/self.crt"
+  SSL_KEY="$SSL_DIR/self.key"
+
+  if [[ "$DOMAIN" != "localhost" && ! "$DOMAIN" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    USE_LETSENCRYPT=true
+  fi
 fi
 
 # ================================
@@ -385,8 +399,8 @@ server {
   listen 443 ssl;
   server_name ${DOMAIN};
 
-  ssl_certificate /etc/nginx/ssl/self.crt;
-  ssl_certificate_key /etc/nginx/ssl/self.key;
+  ssl_certificate ${SSL_CERT};
+  ssl_certificate_key ${SSL_KEY};
 
   ssl_protocols TLSv1.2 TLSv1.3;
   ssl_ciphers HIGH:!aNULL:!MD5;
@@ -405,4 +419,23 @@ sudo nginx -t
 sudo systemctl reload nginx
 
 echo "✅ App created/updated successfully"
-echo "🌐 URL: http://${DOMAIN}"
+
+if [ "$USE_LETSENCRYPT" = true ]; then
+  echo "🔒 Attempting to provision Let's Encrypt certificate for ${DOMAIN}..."
+  if ! command -v certbot &>/dev/null; then
+    sudo apt-get update -y
+    sudo apt-get install -y certbot python3-certbot-nginx
+  fi
+  
+  if sudo certbot --nginx -d "${DOMAIN}" --non-interactive --agree-tos --register-unsafely-without-email --redirect; then
+    echo "✅ Let's Encrypt certificate provisioned successfully!"
+    echo "🌐 URL: https://${DOMAIN}"
+  else
+    echo "⚠️ Failed to provision Let's Encrypt certificate. Falling back to self-signed."
+    echo "🌐 URL: https://${DOMAIN} (Self-Signed)"
+  fi
+elif [ -f "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" ]; then
+  echo "🌐 URL: https://${DOMAIN}"
+else
+  echo "🌐 URL: https://${DOMAIN} (Self-Signed)"
+fi
